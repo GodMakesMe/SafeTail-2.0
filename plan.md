@@ -4,7 +4,14 @@
 **Owner:** Krishna Shukla (krishna23290@iiitd.ac.in) — IIIT-Delhi, advisor Arani Bhattacharya
 **Plan authored:** 2 September 2026
 **Audience:** Claude Code (code mode), operating alone or as an orchestrator over sub-agents.
-**Status of this repo right now:** verbatim copy of `SafeTail-2.0-main`. **Zero code fixes have been applied yet.** Everything in §6–§10 is work to be done.
+**Status of this repo right now (updated 2 Sep 2026, end of implementation session 1):**
+git-initialised; **B0, B1, B2, B3, B4, B6, B8, B9, B12, and all of workstream C
+(seam + oracle + SafeTail-1.0 port) are implemented and committed**, with gates
+**G0, G1, G2, G3, G4, G7 green** and a 24-test regression suite passing.
+**Not yet done:** B5 (metric semantics / D-11, D-12, D-18, D-23), B7 finalisation
+(error bars), workstream D (the R-0…R-6 run matrix + figures F1–F8 + gates
+G5/G6). See `CHANGELOG.md` for the per-defect ledger and §6 below for the
+fixture status. `src/` is no longer a verbatim copy.
 
 ---
 
@@ -337,7 +344,42 @@ All rows verified against the primary documents (`audit/Heterogeneous_Edge_Devic
 
 ## 6. Fixtures applied so far — an honest ledger
 
-**Nothing in `src/` has been modified.** `heterogenous/src/` is byte-identical to `SafeTail-2.0-main/src/`. What this session actually did:
+> **Updated 2 Sep 2026.** The paragraph below described session 0 (planning). The
+> table now records session 1 (implementation). Authoritative per-defect status
+> is `CHANGELOG.md`; per-gate status is at the bottom of that file.
+
+### 6.0 Session 1 — what has been implemented and gated
+
+| Workstream | Defects / features closed | Gate(s) | Commit prefix |
+|---|---|---|---|
+| **B0** | D-01 | G0 ✅ | `B0:` |
+| **B1** | D-02, D-02b, D-02c (+ D-15 alias, W-01) | G1 ✅ | `B1:` |
+| **B2** | D-04, D-05, D-06 | G2 ✅ | `B2:` |
+| **B3** | D-07, M-04, S-02 (+ W-02) | G3 ✅ | `B3:` |
+| **B4** | M-03 (τ term, switchable `REWARD_MODE`) | — | `B4:` |
+| **B6** | D-09 (`{fam}_{1..β}` modes, `--match-k`) | — | `B6:` |
+| **B8** | D-16, D-17, D-19, D-20, D-21 (+ D-27 docstring) | G3 (D-16/17) ✅ | `B8:` |
+| **B9** | D-13, D-14, D-28, D-29, D-30, D-31, D-33, D-35 | — | `B9:` |
+| **B12** | S-01…S-17 → `audit/ERRATA.md` | G7 ✅ | `B12:` |
+| **C** (seam) | M-01 (oracle), M-02 (SafeTail 1.0 port), V1-BUG-01, V1-DEV-01/02 | G4 ✅ | `C-v1:`, `smoke mode…` |
+| infra | `--smoke`, seed threading, `_safetail_log`, `pytest.ini`, `conftest.py` | — | `smoke mode…` |
+
+Regression suite: `tools/tests/` — 24 tests, one+ per closed defect, all green.
+New findings logged this session: **D-36** (Windows cp1252 emoji-print crash),
+**W-01/W-02/W-03** (see §13.4).
+
+### 6.1 Still to do
+
+| Workstream | Blocks / notes |
+|---|---|
+| **B5** | D-11 (metric excludes queueing), D-12 (~45% is transmission noise), D-18 (double delay draw — deferred here from B8), D-23 (wall-clock wait), D-34 (no request-size variation). Involves the *"what does latency mean"* decision (§13.1(2)) — **wants advisor sign-off**. Blocks bit-reproducibility of seeds (B7). |
+| **B7** (finish) | seed *threading* is done and changes results between seeds; **error bars / IQR bands on figures** are part of workstream D. Bit-determinism blocked on B5/D-23. |
+| **D** | R-0…R-6 run matrix (3 seeds), figures F1–F8, gates **G5** (`check_manifest.py`), **G6** (`verify_figures.py`), `tools/make_figures.py`. Explicitly a separate phase — needs full training runs (hours). |
+| retrain (**B1b**) | drop `total_processing_time` leak (D-25, server1/5 models), HED §IV-D features (M-15), held-out R² before/after. Optional MLPs (D-26b). |
+
+### 6.2 Session 0 — planning (unchanged)
+
+What session 0 actually did:
 
 | # | Action | Result |
 |---|---|---|
