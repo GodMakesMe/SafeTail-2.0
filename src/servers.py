@@ -212,7 +212,9 @@ class Server:
         start_time = current_time
         finish_time = start_time + total_delay
 
-        request.combination = combined_str
+        # [SAFETAIL][SERVER][FIX][D-19] record contention string WITHOUT clobbering
+        # the request-type letter.
+        request.contention_str = combined_str
 
         self.requests.append(request)
         self.active_requests.append({

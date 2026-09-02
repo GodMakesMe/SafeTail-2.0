@@ -862,6 +862,19 @@ Do **not** start the SafeTail 1.0 port before B8 lands — `ctx.request_type` de
 | 1.0 port flattered by extra information | medium | A-1 in §8.5 is the guard; the auditor checks `state_v1.py` sees only `free_slots`, not `server_dynamic` |
 | Silent degradation returns | medium | §10.3 + G5 manifest check |
 
+### 13.4 Discrepancies found during implementation (R7 log)
+
+Recorded here rather than silently reconciled. None contradict the plan's design;
+each is an *additive* finding.
+
+| ID | Found | Detail | Disposition |
+|---|---|---|---|
+| **D-36** Δ | 2 Sep, B0 | `src/` is full of emoji `print()`s (`✅`, `⏱`, `📊`, `🎨`). On a Windows console (cp1252) these raise `UnicodeEncodeError` and abort the run. | `src/main.py` now forces `stdout/stderr` to UTF-8 at startup (interim). Full fix = route prints through `_safetail_log` in **B9**. |
+| **W-01** Δ | 2 Sep, B1 recon | The 15 regressor wrappers are **not** identical across servers. `server3_regressor/detect_predictor.py` uses a *different* `_build_features` schema (`num_tasks`, `has_speech`, `peak_cpu`, `avg_cpu_clock`, `num_files=500`, no scaler) yet still loads `models/server1/…`. D-02 (all load server 1) holds; the per-server feature code diverges on top of it. | No change to plan. **B1** deletes all 15 wrappers for one parameterised `src/regressors.py`, which erases this. Noted so B1 does not assume a single source schema. |
+| **W-02** Δ | 2 Sep, B8 | `Request.server_dicts` has length **6**, not 5 (`[{} for _ in range(6)]`). `compute_step_reward` iterates `range(len(server_dicts))` = 6 and `np.mean`s a length-6 array; slot 5 is always `{}` → contributes 0. Amplifies D-07's "mean over all slots". | Left as-is for B8 (out of scope); **B3** replaces the mean-over-slots collapse with `mean over |A|`, which removes the phantom slot from the denominator. Flagged for the B3 agent. |
+| **W-03** Δ | 2 Sep, B8 | `compute_step_reward` `required_keys` lists `cpu_core_usage`, but the body reads `d["cpu_usage"]`. `fill_server_dict` populates both, so it works today; a future refactor that drops one key would pass the guard and then `KeyError`. | Harmless now. Fold the key-list/body mismatch into **B9** hygiene. |
+| **D-18 deferral** | 2 Sep, B8 | B8 was scoped to land D-16/D-17/D-19/D-20/D-21. **D-18 (single delay draw)** touches `servers.py`'s `compute_request_time`/`schedule_request` signatures and overlaps B5's metric rework (which also rewrites the draw path). | D-18 moved to **B5**. Recorded here so it is not lost. The seam's `PolicyContext` already carries the *phase-2* estimate only, so seam policies are D-18-safe today. |
+
 ### 13.3 Out of scope, but on file
 **Tail-Learning** (arXiv 2312.16883; ACM TAAS 2025, 10.1145/3737289) was assessed as a possible additional baseline. Verdict on file: usable **in singleton-plan mode** (`B_i = {(1),…,(5)}`), which is a first-class case of the paper's own action space — no job-splitting or virtualisation needed. It tests class-level queueing-theoretic single-assignment routing against per-request learned scheduling, at matched K=1. No public code exists. **Not part of this phase.**
 

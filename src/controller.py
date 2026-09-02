@@ -53,6 +53,9 @@ class Controller:
         self.request_p_done = 0
         self.request_p_total = 0
 
+        # [SAFETAIL][CONTROLLER][D-21] requests dropped after saturation retries
+        self.dropped_requests = 0
+
         # ---------------- Plotting Configuration ----------------
         self.plot_every_n_episodes = 20  # Generate plots every N episodes
         self.plot_dir = Path(constants.training_log_folder + "/plots")
@@ -131,7 +134,7 @@ class Controller:
         with open(self.request_access_log_path, "w") as f:
             f.write("request_id,request_type,access_rate\n")
         header = (
-            "request_id,request_type,computation_delay,propagation_delay,"
+            "request_id,request_type,contention_str,computation_delay,propagation_delay,"
             "transmission_delay,queueing_delay,total_latency\n"
         )
         with open(self.latency_log_path, "w") as f:
@@ -168,10 +171,15 @@ class Controller:
 
         try:
             request_id = getattr(request, "request_id", "unknown")
-            request_type = getattr(request, "combination", "?")
+            # [SAFETAIL][FIX][D-19] log the immutable type letter, never the
+            # contention string. `combination` is no longer mutated (D-19), but
+            # slice defensively so this column can only ever be s|d|p|?.
+            request_type = str(getattr(request, "combination", "?"))[:1] or "?"
+            contention = str(getattr(request, "contention_str", "") or "")
             row = (
                 f"{request_id},"
                 f"{request_type},"
+                f"{contention},"
                 f"{computation_delay:.6f},"
                 f"{propagation_delay:.6f},"
                 f"{transmission_delay:.6f},"
@@ -374,17 +382,31 @@ class Controller:
         """
         Step reward computed PER REQUEST (per server).
 
-        Reward:
-        R = 1 + log( exp((1 - cm)(1 - cu)(1 - gm)(1 - gu) - 1 ))
+        Implemented formula (see S-03 -- this is the ONE authoritative statement):
 
-        Where:
-        cm = RAM utilization = RAM_used / Total_RAM_available
-        cu = CPU core utilization = (sum of CPU core percentages/100) / Number_of_cores
-        gm = GPU memory utilization = peak GPU_memory / Total_GPU_memory_available
-        gu = GPU core utilization = GPU_core_utilization
+            headroom_i = geometric_mean( available (1 - u) factors )
+            R_i        = log(1 + headroom_i)            in [0, log 2]
 
-        If action_subset is None → compute for all servers
-        Otherwise → compute only for servers in action_subset
+        Utilisation factors u:
+            cm = ram_usage / total_ram
+            cu = (sum cpu_core_% / 100) / total_cpu_cores
+            gm = gpu_memory / total_gpu_memory      } only when the server HAS a GPU
+            gu = gpu_usage / 100                    }   (D-16)
+
+        [SAFETAIL][REWARD][FIX][D-16] CPU-only servers (no GPU columns in their
+        dataset CSV -- servers 3 and 4) previously got (1-0)*(1-0)=1 for the two
+        GPU factors, structurally inflating their headroom. Now the GPU factors
+        are DROPPED for such servers and the product is renormalised via a
+        geometric mean so a 2-factor and a 4-factor server are on one scale.
+
+        [SAFETAIL][REWARD][FIX][D-27] docstring now states the formula that is
+        actually computed (was: "1 + log(exp(...)-1)").
+
+        NOTE: this reward is still monotone non-decreasing in |A| once the
+        controller collapses it with a mean -- pricing redundancy is D-07/M-04,
+        fixed in B3, not here.
+
+        If action_subset is None -> compute for all servers, else only those.
         """
 
         num_servers = len(request.server_dicts)
@@ -450,19 +472,23 @@ class Controller:
 
                 #######################################################################################################
 
-                # Track request completion counts for different combination types (for use in episodic reward shaping)
-                if (combination == "s"):
+                # [SAFETAIL][REWARD][FIX][D-20] completion counts are DEADLINE-
+                # CONDITIONAL again. Previously *_total was set here but *_done was
+                # incremented unconditionally in send_to_server(), so the
+                # completion ratio in the episodic wait-time denominator was
+                # identically 1.0 by construction. `_done` is now gated on T<=D2
+                # here, at the one place T is known, and the unconditional
+                # increments in send_to_server() are removed.
+                _met_deadline = (T <= D2)
+                if combination == "s":
                     self.request_s_total += 1
-                    # if T <= D2:
-                    #     self.request_s_done += 1
-                elif (combination == "d"):
+                    self.request_s_done += int(_met_deadline)
+                elif combination == "d":
                     self.request_d_total += 1
-                    # if T <= D2:
-                    #     self.request_d_done += 1
-                elif (combination == "p"):
+                    self.request_d_done += int(_met_deadline)
+                elif combination == "p":
                     self.request_p_total += 1
-                    # if T <= D2:
-                    #     self.request_p_done += 1
+                    self.request_p_done += int(_met_deadline)
 
                 #######################################################################################################
 
@@ -502,41 +528,43 @@ class Controller:
 
                 total_ram_mb = float(d["total_ram"]) * GB_TO_MB
                 cm = d["ram_usage"] / max(total_ram_mb, 1e-8)
-                # print(f"RAM Usage: {d['ram_usage']}, Total RAM: {d['total_ram']}, CM: {cm}")
 
                 cpu_cores_utilised = np.sum(d["cpu_usage"]) / 100.0
-                cu = cpu_cores_utilised / (float(d["total_cpu_cores"]))
-                # print(f"CPU Usage: {cpu_cores_utilised}, Total CPU Cores: {d['total_cpu_cores']}, CU: {cu}")
+                cu = cpu_cores_utilised / max(float(d["total_cpu_cores"]), 1e-8)
 
-                total_gpu_mem_mb = float(d["total_gpu_memory"]) * GB_TO_MB
-                gm = d["gpu_memory"] / max(total_gpu_mem_mb, 1e-8)
-                # print(f"GPU Memory Usage: {d['gpu_memory']}, Total GPU Memory: {d['total_gpu_memory']}, GM: {gm}")
+                # [SAFETAIL][REWARD][FIX][D-16] GPU factors only for GPU servers.
+                has_gpu = float(d.get("total_gpu_memory", 0.0) or 0.0) > 0.0
+                factors = [1.0 - cm, 1.0 - cu]
+                if has_gpu:
+                    total_gpu_mem_mb = float(d["total_gpu_memory"]) * GB_TO_MB
+                    gm = d["gpu_memory"] / max(total_gpu_mem_mb, 1e-8)
+                    gu = float(d["gpu_usage"]) / 100.0
+                    factors += [1.0 - gm, 1.0 - gu]
 
-                gu = float(d["gpu_usage"]) / 100.0
-                # print(f"GPU Usage: {d['gpu_usage']}, GU: {gu}")
-                # print()
+                # clip each factor into [0,1] (utilisation can momentarily exceed
+                # capacity in the trace) then take the geometric mean so servers
+                # with 2 vs 4 factors are comparable.
+                factors = [min(1.0, max(0.0, f)) for f in factors]
+                headroom = float(np.prod(factors)) ** (1.0 / len(factors))
 
-                # ---- Reward ----
-                product = (1 - cm) * (1 - cu) * (1 - gm) * (1 - gu)
+                # ---- Reward ----  R in [0, log 2]  (S-03)
+                reward = float(np.log1p(headroom))
 
-                reward = np.log(product + 1.0)
-                # print(f"[CONTROLLER]...[STEP REWARD] Server {server_idx}: Reward={reward:.6f}")
-
-                # print()
-                # print()
-
-                # Final sanity check
                 if not np.isfinite(reward):
                     raise ValueError(
-                        f"[CONTROLLER]...[STEP REWARD][ERROR] Non-finite reward computed for server {server_idx}")
+                        f"[CONTROLLER][REWARD][INVARIANT][D-17] non-finite reward for server {server_idx}")
 
                 rewards[i] = reward
 
             except Exception as e:
-                # Fail-safe: zero reward + log
-                rewards[server_idx - 1] = 0.0
+                # [SAFETAIL][REWARD][FIX][D-17] zero THIS server's slot (was
+                # rewards[server_idx-1], which corrupted a neighbour and left
+                # server 0 at its initialised value). server_idx is validated
+                # 0 <= server_idx < num_servers above.
+                rewards[server_idx] = 0.0
                 print(
-                    f"[CONTROLLER]...[STEP REWARD][ERROR] Server {server_idx}: {type(e).__name__} - {e}"
+                    f"[CONTROLLER][REWARD][D-17] step-reward failure on server {server_idx}: "
+                    f"{type(e).__name__} - {e}"
                 )
 
         return rewards
@@ -617,6 +645,13 @@ class Controller:
 
         return episodic_reward
 
+    # [SAFETAIL][CONTROLLER][FIX][D-21] saturation retry: bounded, exp backoff,
+    # explicit drop + counter. Was unbounded recursion (stack overflow under
+    # sustained saturation).
+    SATURATION_MAX_RETRIES = 6
+    SATURATION_BACKOFF_BASE = 0.05   # s; 0.05, 0.1, 0.2, ... capped
+    SATURATION_BACKOFF_CAP = 0.8
+
     def process_step(self, request):
 
         try:
@@ -624,18 +659,29 @@ class Controller:
         except Exception:
             print(f"\n[CONTROLLER, STEP {self.current_step}] Processing request <unknown>.")
 
-        try:
-            load = self.find_free_servers()
-            num_free = sum(l != -1 for l in load)
-        except Exception as e:
-            print(f"[CONTROLLER, !] Failed to find free servers: {type(e).__name__} - {e}")
-            return
-
-        if num_free == 0:
-            print("[CONTROLLER, QUEUE] All servers busy. Retrying shortly.")
-            time.sleep(0.1)
-            self.process_step(request)
-            return
+        num_free = 0
+        load = None
+        for attempt in range(self.SATURATION_MAX_RETRIES + 1):
+            try:
+                load = self.find_free_servers()
+                num_free = sum(l != -1 for l in load)
+            except Exception as e:
+                print(f"[CONTROLLER, !] Failed to find free servers: {type(e).__name__} - {e}")
+                return
+            if num_free > 0:
+                break
+            if attempt == self.SATURATION_MAX_RETRIES:
+                self.dropped_requests += 1
+                print(
+                    f"[SAFETAIL][CONTROLLER][SCHED][D-21] all servers saturated after "
+                    f"{self.SATURATION_MAX_RETRIES} retries; DROPPING request "
+                    f"{getattr(request, 'request_id', '?')} (total dropped={self.dropped_requests})"
+                )
+                return
+            backoff = min(self.SATURATION_BACKOFF_BASE * (2 ** attempt), self.SATURATION_BACKOFF_CAP)
+            print(f"[SAFETAIL][CONTROLLER][SCHED][D-21] all servers busy, "
+                  f"retry {attempt + 1}/{self.SATURATION_MAX_RETRIES} in {backoff:.2f}s")
+            time.sleep(backoff)
 
         try:
             request.load = np.array(load)
@@ -792,7 +838,7 @@ class Controller:
             if len(action_subset) > 0 and hasattr(request, 'total_processing_delay'):
                 sorted_list = sorted(l)[0]
                 observed_latency = sorted_list[0]
-                request.combination = sorted_list[1]
+                request.contention_str = sorted_list[1]  # [SAFETAIL][FIX][D-19] not .combination
                 self.episode_latencies.append(observed_latency)
                 # l.append([request_total_delay[i], combined_str, computation_delay_for_node, propagation_delay_for_node, tramission_delay_for_node])
 
@@ -1240,16 +1286,10 @@ class Controller:
                 try:
                     with self.lock:
                         self.process_step(request)
-
-                        # request combination type
-                        combination = request.combination[0]
-                        # Track request completion counts for different combination types (for use in episodic reward shaping)
-                        if (combination == "s"):
-                            self.request_s_done += 1
-                        elif (combination == "d"):
-                            self.request_d_done += 1
-                        elif (combination == "p"):
-                            self.request_p_done += 1
+                        # [SAFETAIL][REWARD][FIX][D-20] the unconditional
+                        # request_*_done increments that used to live here are
+                        # gone -- completion is now counted deadline-conditionally
+                        # inside compute_step_reward() where T is known.
 
                 except Exception as e:
                     # Fail-soft: skip bad request, continue episode
