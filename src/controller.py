@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 from pathlib import Path
@@ -8,10 +9,17 @@ from tensorflow.keras.models import load_model
 
 import constants
 import servers
-from agent import DQNAgent
+from agent import DQNAgent, request_to_state_array
 from policy_registry import PolicyContext, subset_to_index  # [SAFETAIL][SEAM] stdlib-only, always present
 
 MAX_CONCURRENT_REQUESTS = servers.MAX_CONCURRENT_REQUESTS
+
+# [SAFETAIL][REPLAY][AUDIT][D-04] When SAFETAIL_AUDIT_REPLAY=1, every stored
+# transition is also appended here with the realised per-server delays of the
+# same step, so tools/audit_replay.py (gate G2) can assert the state carries no
+# outcome. Off by default -- zero cost in normal runs.
+AUDIT_TRANSITIONS: list = []
+_AUDIT_REPLAY = os.environ.get("SAFETAIL_AUDIT_REPLAY", "0") not in ("0", "", "false")
 
 
 class Controller:
@@ -800,6 +808,20 @@ class Controller:
             print(f"[CONTROLLER, !] Agent failed to produce action: {type(e).__name__} - {e}")
             return
 
+        # [SAFETAIL][REPLAY][FIX][D-04] Snapshot the state the agent ACTED ON,
+        # as a flat array, BEFORE schedule_request() mutates the request with
+        # realised delays / contention string / queue_waiting_time. The old code
+        # stored the live Request object and only flattened it in
+        # finalize_episode(), by which time it held the OUTCOME of its own action.
+        s_t_arr = None
+        _learning = (self.BASELINE_MODE == "safetail" and self.policy is None
+                     and not self.testing_phase_active)
+        if _learning:
+            try:
+                s_t_arr = request_to_state_array(request, self.agent.remove_nan_in_state)
+            except Exception as e:
+                print(f"[SAFETAIL][REPLAY][D-04] s_t snapshot failed: {type(e).__name__} - {e}")
+
         # track the waiting time in the queue before request starts processing
         try:
             request.queue_waiting_time = time.time() * 1000.0 - request.arrival_time  # in ms
@@ -886,15 +908,36 @@ class Controller:
                 pass
 
         elif self.BASELINE_MODE == "safetail":
-            # store experience
+            # [SAFETAIL][REPLAY][FIX][D-04][D-05] store ARRAYS, not the live
+            # Request. s_t was snapshotted before scheduling (estimates only);
+            # s_{t+1} is snapshotted now, post-action (realised delays), so the
+            # two are genuinely different (D-05) and s_t carries no outcome (D-04).
             try:
                 if not self.testing_phase_active:
+                    s_tp1_arr = None
+                    try:
+                        s_tp1_arr = request_to_state_array(request, self.agent.remove_nan_in_state)
+                    except Exception as e:
+                        print(f"[SAFETAIL][REPLAY][D-04] s_t+1 snapshot failed: {type(e).__name__} - {e}")
                     self.step_experiences.append({
-                        "state": request,
+                        "state_arr": s_t_arr,
                         "action": action_index,
-                        "reward": combined_step_reward,
-                        "next_state": request
+                        "reward": float(combined_step_reward),   # per-step credit (D-06)
+                        "next_state_arr": s_tp1_arr,
                     })
+                    if _AUDIT_REPLAY and s_t_arr is not None:
+                        try:
+                            AUDIT_TRANSITIONS.append({
+                                "episode": int(self.current_episode),
+                                "s_t": np.asarray(s_t_arr, dtype=float).copy(),
+                                "s_tp1": (None if s_tp1_arr is None
+                                          else np.asarray(s_tp1_arr, dtype=float).copy()),
+                                "reward": float(combined_step_reward),
+                                "realised_delay": np.asarray(
+                                    getattr(request, "total_processing_delay", []), dtype=float).copy(),
+                            })
+                        except Exception:
+                            pass
             except Exception as e:
                 print(f"[CONTROLLER, !] Failed to store experience: {type(e).__name__} - {e}")
 
@@ -968,14 +1011,23 @@ class Controller:
                 )
 
             else:
-                # normal training memory store
+                # [SAFETAIL][REPLAY][FIX][D-06] keep the PER-STEP reward and add
+                # the episodic signal as a broadcast bonus R_ep/N -- do NOT
+                # overwrite r_t with episodic_reward (which is what discarded all
+                # per-step credit).
+                n_steps = max(1, len(self.step_experiences))
+                ep_bonus = float(episodic_reward) / n_steps
+                stored = 0
                 for exp in self.step_experiences:
-                    self.agent.store(
-                        state_request=exp['state'],
-                        action=exp['action'],
-                        reward=episodic_reward,
-                        next_state_request=exp['next_state']
+                    if exp.get("state_arr") is None or exp.get("next_state_arr") is None:
+                        continue
+                    self.agent.store_arrays(
+                        exp["state_arr"], exp["action"],
+                        exp["reward"] + ep_bonus, exp["next_state_arr"],
                     )
+                    stored += 1
+                print(f"[SAFETAIL][REPLAY][D-06] stored {stored}/{len(self.step_experiences)} "
+                      f"transitions (per-step r + R_ep/{n_steps}={ep_bonus:.4f})")
 
                 if len(self.agent.memory) >= self.agent.batch_size:
                     print(f"[CONTROLLER, EPISODE {self.current_episode}] Training agent...")
