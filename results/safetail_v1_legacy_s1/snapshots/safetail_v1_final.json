@@ -1,0 +1,29 @@
+{
+  "policy": "safetail_v1",
+  "selects": 15225,
+  "explore_frac": 0.31494252873563217,
+  "replay_steps": 15097,
+  "epsilon": 0.1,
+  "frozen": false,
+  "V1_BUG_01_out_of_band": 0,
+  "mean_access_rate": 0.5079540229885058,
+  "final_loss": 3.2622294425964355,
+  "tau_by_type": {
+    "s": 0.0518,
+    "d": 0.0345,
+    "p": 0.0355
+  },
+  "tag": "final",
+  "gamma_decay": 0.00013136288998357964,
+  "gamma_decay_native": 5.5e-06,
+  "eps_decay_fraction": 0.45,
+  "replay_every": 1,
+  "total_steps_assumed": 15225,
+  "batch": 128,
+  "gamma": 0.95,
+  "lr": 1e-06,
+  "nS": 12,
+  "nA": 31,
+  "beta": 5,
+  "model_path": "E:\\Project\\IP_Arani\\heterogenous\\results\\safetail_v1_legacy_s1\\snapshots\\safetail_v1_final.keras"
+}
