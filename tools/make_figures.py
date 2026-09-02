@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -64,28 +65,80 @@ def _read_latency(path: Path) -> pd.DataFrame | None:
     return df
 
 
-def discover_runs(extra: dict[str, Path] | None = None) -> dict[str, pd.DataFrame]:
-    runs: dict[str, pd.DataFrame] = {}
+def discover_seeded(pattern: str) -> dict[int, pd.DataFrame]:
+    """All seeds of one policy: results/<pattern>_s<seed>/latency_log.csv."""
+    out: dict[int, pd.DataFrame] = {}
+    for p in sorted((REPO / "results").glob(f"{pattern}_s*")):
+        m = re.search(r"_s(\d+)$", p.name)
+        if not m:
+            continue
+        d = _read_latency(p / "latency_log.csv")
+        if d is not None and len(d):
+            out[int(m.group(1))] = d
+    return out
 
-    def add(label: str, p: Path):
+
+def discover_runs(extra: dict[str, Path] | None = None) -> dict[str, dict[int, pd.DataFrame]]:
+    """label -> {seed: dataframe}. Single-run sources are recorded as seed -1."""
+    runs: dict[str, dict[int, pd.DataFrame]] = {}
+
+    def add_single(label: str, p: Path, seed: int = -1):
         d = _read_latency(p)
         if d is not None and len(d):
-            runs[label] = d
+            runs.setdefault(label, {})[seed] = d
 
-    # the already-published heterogeneous result set
-    add("SafeTail-2.0 (het)", REF / "safetail_training_logs" / "latency_log.csv")
-    # the shipped K-baselines
+    # the already-published heterogeneous result set (single run, original code)
+    add_single("SafeTail-2.0 (shipped)", REF / "safetail_training_logs" / "latency_log.csv")
+    # the shipped K-baselines (single runs each)
     for fam, pretty in (("minload", "MinLoad"), ("minprop", "MinProp"), ("rand", "Rand")):
         for k in (1, 2, 3):
-            add(f"{pretty}-{k}",
-                REF / "baselines" / f"training_logs_{fam}_{k}" / f"{fam}_{k}_latency_log.csv")
-    # our new runs
-    add("SafeTail-1.0", REPO / "results" / "v1_legacy_s0" / "latency_log.csv")
-    add("Oracle", REPO / "results" / "oracle_legacy_s0" / "latency_log.csv")
+            add_single(f"{pretty}-{k}",
+                       REF / "baselines" / f"training_logs_{fam}_{k}" / f"{fam}_{k}_latency_log.csv")
+
+    # our seeded runs from tools/run_matrix.py
+    for pattern, label in (("safetail_v1_legacy", "SafeTail-1.0"),
+                           ("oracle_legacy", "Oracle"),
+                           ("native_legacy", "SafeTail-2.0 (rerun)")):
+        s = discover_seeded(pattern)
+        if s:
+            runs[label] = s
+    # the original slow-path seed-0 v1 run, kept as cross-validation of the
+    # tf.function rewrite (identical maths, 27.7x faster)
+    add_single("SafeTail-1.0 (slowpath s0)", REPO / "results" / "v1_legacy_s0" / "latency_log.csv", seed=0)
 
     for label, p in (extra or {}).items():
-        add(label, p)
+        add_single(label, p)
     return runs
+
+
+def truncate_common_seeded(runs):
+    n = min(len(d) for seeds in runs.values() for d in seeds.values())
+    return {lab: {s: d.iloc[:n].copy() for s, d in seeds.items()}
+            for lab, seeds in runs.items()}, n
+
+
+def percentile_table(runs, metric: str) -> pd.DataFrame:
+    """Per-seed percentiles, then median/min/max across seeds."""
+    rows = []
+    for lab, seeds in runs.items():
+        per_seed = []
+        for s, d in sorted(seeds.items()):
+            v = d[metric].to_numpy(float)
+            r = {"policy": lab, "seed": s, "n": len(v), "mean": float(v.mean())}
+            r.update({f"p{p}": float(np.percentile(v, p)) for p in PCTS})
+            per_seed.append(r)
+            rows.append(r)
+        _ = per_seed
+    return pd.DataFrame(rows)
+
+
+def aggregate(tbl: pd.DataFrame) -> pd.DataFrame:
+    g = tbl.groupby("policy", sort=False)
+    out = g.agg(seeds=("seed", "count"), n=("n", "first"),
+                **{f"{c}_med": (c, "median") for c in [f"p{p}" for p in PCTS] + ["mean"]},
+                **{f"{c}_min": (c, "min") for c in [f"p{p}" for p in PCTS]},
+                **{f"{c}_max": (c, "max") for c in [f"p{p}" for p in PCTS]})
+    return out.reset_index()
 
 
 def truncate_common(runs: dict[str, pd.DataFrame]) -> tuple[dict[str, pd.DataFrame], int]:
@@ -105,52 +158,52 @@ def _save(fig, out: Path, name: str, table: pd.DataFrame):
     print(f"[SAFETAIL][PLOT] wrote {name}.png/.pdf + {name}.csv")
 
 
-def fig_tail_bars(runs, out: Path, metric="total_latency", name="F1_tail_latency"):
-    labels = list(runs)
-    rows = []
-    for lab in labels:
-        v = runs[lab][metric].to_numpy(float)
-        rows.append({"policy": lab, "n": len(v), **{f"p{p}": float(np.percentile(v, p)) for p in PCTS},
-                     "mean": float(v.mean())})
-    tbl = pd.DataFrame(rows)
+def pooled(runs) -> dict[str, pd.DataFrame]:
+    """Concatenate all seeds of a policy, for distribution-shaped figures."""
+    return {lab: pd.concat(list(seeds.values()), ignore_index=True)
+            for lab, seeds in runs.items()}
 
+
+def fig_tail_bars(agg: pd.DataFrame, out: Path, metric: str, name="F1_tail_latency"):
+    labels = list(agg["policy"])
     x = np.arange(len(PCTS)); w = 0.8 / len(labels)
-    fig, ax = plt.subplots(figsize=(11, 5))
+    fig, ax = plt.subplots(figsize=(13, 5.5))
     for i, lab in enumerate(labels):
-        vals = [tbl.loc[tbl.policy == lab, f"p{p}"].iloc[0] for p in PCTS]
-        ax.bar(x + i * w - 0.4 + w / 2, vals, w, label=lab,
-               color=STYLE.get(lab, None), edgecolor="black", linewidth=0.4)
+        r = agg[agg.policy == lab].iloc[0]
+        med = [r[f"p{p}_med"] for p in PCTS]
+        lo = [max(0.0, r[f"p{p}_med"] - r[f"p{p}_min"]) for p in PCTS]
+        hi = [max(0.0, r[f"p{p}_max"] - r[f"p{p}_med"]) for p in PCTS]
+        ax.bar(x + i * w - 0.4 + w / 2, med, w, label=f"{lab} (n_seeds={int(r.seeds)})",
+               color=STYLE.get(lab), edgecolor="black", linewidth=0.4,
+               yerr=[lo, hi], capsize=2, error_kw=dict(lw=0.8))
     ax.set_xticks(x); ax.set_xticklabels([f"p{p}" for p in PCTS])
-    ax.set_ylabel(f"{metric.replace('_', ' ')} (ms)")
-    ax.set_title(f"Tail latency by percentile — {metric} (n={len(next(iter(runs.values())))} per policy)")
-    ax.legend(ncol=3, fontsize=8); ax.grid(axis="y", alpha=.3)
-    _save(fig, out, name, tbl)
-    return tbl
+    ax.set_ylabel(f"{metric.replace('_',' ')} (ms)")
+    ax.set_title(f"Tail latency — {metric} (bars = median across seeds, whiskers = min/max)")
+    ax.legend(ncol=3, fontsize=7); ax.grid(axis="y", alpha=.3)
+    _save(fig, out, name, agg)
 
 
-def fig_ccdf(runs, out: Path, metric="total_latency", name="F2_ccdf"):
-    fig, ax = plt.subplots(figsize=(8, 5.5))
-    rows = []
-    for lab, d in runs.items():
+def fig_ccdf(runs, out: Path, metric: str, name="F2_ccdf"):
+    fig, ax = plt.subplots(figsize=(8.5, 5.5)); rows = []
+    for lab, d in pooled(runs).items():
         v = np.sort(d[metric].to_numpy(float)); v = v[np.isfinite(v)]
         surv = 1.0 - np.arange(1, v.size + 1) / v.size
-        ax.plot(v, surv, label=lab, color=STYLE.get(lab, None), lw=1.6)
+        ax.plot(v, surv, label=lab, color=STYLE.get(lab), lw=1.6)
         step = max(1, v.size // 400)
-        for xx, ss in zip(v[::step], surv[::step]):
-            rows.append({"policy": lab, "latency_ms": xx, "P_gt": ss})
+        rows += [{"policy": lab, "latency_ms": xx, "P_gt": ss}
+                 for xx, ss in zip(v[::step], surv[::step])]
     ax.set_yscale("log"); ax.set_xlabel(f"{metric.replace('_',' ')} (ms)")
-    ax.set_ylabel("P(latency > x)"); ax.set_title("Latency CCDF (tail on the right, log-y)")
-    ax.set_ylim(1e-4, 1); ax.grid(alpha=.3); ax.legend(ncol=2, fontsize=8)
+    ax.set_ylabel("P(latency > x)"); ax.set_title("Latency CCDF (log-y; tail to the right)")
+    ax.set_ylim(1e-4, 1); ax.grid(alpha=.3); ax.legend(ncol=2, fontsize=7)
     _save(fig, out, name, pd.DataFrame(rows))
 
 
-def fig_by_type(runs, out: Path, metric="total_latency", name="F6_by_request_type"):
-    types = [("s", "Speech"), ("d", "Detect"), ("p", "Predict")]
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.2), sharey=True)
-    rows = []
-    for ax, (t, pretty) in zip(axes, types):
+def fig_by_type(runs, out: Path, metric: str, name="F6_by_request_type"):
+    P = pooled(runs)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.4), sharey=True); rows = []
+    for ax, (t, pretty) in zip(axes, [("s", "Speech"), ("d", "Detect"), ("p", "Predict")]):
         labs, vals = [], []
-        for lab, d in runs.items():
+        for lab, d in P.items():
             sub = d[d["type"] == t][metric].to_numpy(float)
             if sub.size == 0:
                 continue
@@ -158,7 +211,8 @@ def fig_by_type(runs, out: Path, metric="total_latency", name="F6_by_request_typ
             rows.append({"policy": lab, "type": pretty, "n": int(sub.size), "p95": v})
         ax.bar(range(len(labs)), vals, color=[STYLE.get(l) for l in labs],
                edgecolor="black", linewidth=.4)
-        ax.set_xticks(range(len(labs))); ax.set_xticklabels(labs, rotation=60, ha="right", fontsize=7)
+        ax.set_xticks(range(len(labs)))
+        ax.set_xticklabels(labs, rotation=65, ha="right", fontsize=6.5)
         ax.set_title(f"{pretty} ({t})"); ax.grid(axis="y", alpha=.3)
     axes[0].set_ylabel(f"p95 {metric.replace('_',' ')} (ms)")
     fig.suptitle("p95 latency per request type (S-14: s=Speech, d=Detect, p=Predict)")
@@ -166,27 +220,23 @@ def fig_by_type(runs, out: Path, metric="total_latency", name="F6_by_request_typ
 
 
 def fig_decomposition(runs, out: Path, name="F7_latency_decomposition"):
-    comps = [("computation_delay", "computation"), ("propagation_delay", "propagation"),
-             ("transmission_delay", "transmission"), ("queueing_delay", "queueing")]
-    labs = list(runs); rows = []
-    fig, ax = plt.subplots(figsize=(11, 5))
-    bottom = np.zeros(len(labs))
-    for col, pretty in comps:
+    P = pooled(runs); labs = list(P); rows = []
+    fig, ax = plt.subplots(figsize=(13, 5)); bottom = np.zeros(len(labs))
+    for col, pretty in [("computation_delay", "computation"), ("propagation_delay", "propagation"),
+                        ("transmission_delay", "transmission"), ("queueing_delay", "queueing")]:
         vals = []
         for lab in labs:
-            d = runs[lab]
-            # component columns are in SECONDS except queueing_delay (ms)
+            d = P[lab]
             if col not in d.columns:
                 vals.append(0.0); continue
             m = float(d[col].mean())
-            vals.append(m if col == "queueing_delay" else m * 1000.0)
+            vals.append(m if col == "queueing_delay" else m * 1000.0)  # queue is already ms
         ax.bar(labs, vals, bottom=bottom, label=pretty, edgecolor="black", linewidth=.3)
-        for lab, v in zip(labs, vals):
-            rows.append({"policy": lab, "component": pretty, "mean_ms": v})
+        rows += [{"policy": l, "component": pretty, "mean_ms": v} for l, v in zip(labs, vals)]
         bottom += np.array(vals)
     ax.set_ylabel("mean contribution (ms)")
     ax.set_title("Latency decomposition — what is actually being optimised (D-12)")
-    ax.set_xticklabels(labs, rotation=60, ha="right", fontsize=8)
+    ax.set_xticklabels(labs, rotation=65, ha="right", fontsize=7)
     ax.legend(); ax.grid(axis="y", alpha=.3)
     _save(fig, out, name, pd.DataFrame(rows))
 
@@ -195,26 +245,33 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="SafeTail comparison figures")
     ap.add_argument("--out", default=str(REPO / "figures"))
     ap.add_argument("--metric", default="total_latency",
-                    choices=["total_latency", "end_to_end_latency"],
-                    help="decision 13.1(2): headline = service latency (total_latency)")
+                    choices=["total_latency", "end_to_end_latency"])
     args = ap.parse_args()
     out = Path(args.out)
 
     runs = discover_runs()
     if not runs:
         print("[SAFETAIL][PLOT] no runs found"); return 1
-    print(f"[SAFETAIL][PLOT] runs: {list(runs)}")
-    runs, n = truncate_common(runs)
-    print(f"[SAFETAIL][PLOT] truncated all runs to the common n={n}")
+    for lab, seeds in runs.items():
+        print(f"[SAFETAIL][PLOT] {lab:<28} seeds={sorted(seeds)}")
+    runs, n = truncate_common_seeded(runs)
+    print(f"[SAFETAIL][PLOT] truncated every run to the common n={n}")
 
-    tbl = fig_tail_bars(runs, out, args.metric)
+    per_seed = percentile_table(runs, args.metric)
+    agg = aggregate(per_seed)
+
+    fig_tail_bars(agg, out, args.metric)
     fig_ccdf(runs, out, args.metric)
     fig_by_type(runs, out, args.metric)
     fig_decomposition(runs, out)
 
-    tbl.insert(1, "metric", args.metric)
-    tbl.to_csv(out / "table_main.csv", index=False)
-    print("\n" + tbl.to_string(index=False))
+    out.mkdir(parents=True, exist_ok=True)
+    per_seed.insert(1, "metric", args.metric)
+    per_seed.to_csv(out / "table_per_seed.csv", index=False)
+    agg.to_csv(out / "table_main.csv", index=False)
+
+    show = agg[["policy", "seeds", "n"] + [f"p{p}_med" for p in PCTS] + ["mean_med"]]
+    print("\n" + show.to_string(index=False, float_format=lambda v: f"{v:8.2f}"))
     print(f"\n[SAFETAIL][PLOT] figures + CSVs -> {out}")
     return 0
 
