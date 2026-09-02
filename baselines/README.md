@@ -19,14 +19,16 @@ enforced by gate **G4** (`tools/verify_isolation.sh`).
 
 ## Status
 
-Scaffold only. Nothing here is implemented yet.
-
 | Piece | Plan section | State |
 |---|---|---|
-| `src/policy_registry.py` seam | §8.3 | not written |
-| `common/env_adapter.py` (`ctx`) | §8.4 | not written |
-| `oracle/policy_oracle.py` (M-01) | §8.7 | not written — **do this first**, it proves the seam |
-| `safetail_v1/` (M-02) | §8.5, §8.6, §14.1 | not written — needs B8 first (`ctx.request_type`) |
+| `src/policy_registry.py` seam | §8.3 | **done** — `Policy` protocol + `PolicyContext` + registry + `subset↔index` |
+| `common/env_adapter.py` + `metrics.py` | §8.4 | **done** |
+| `register.py` / `run_baseline.py` | §8.3 | **done** — `python baselines/run_baseline.py --policy <name> [--smoke]` |
+| `oracle/policy_oracle.py` (M-01) | §8.7 | **done** — runs end-to-end through the seam; gate G4 green |
+| `safetail_v1/` (M-02) | §8.5, §8.6, §14.1 | **done** — port of the 1.0 algorithm; τ per type from `reference_v0`; faithfulness register in `safetail_v1/README.md` |
+
+Remaining for workstream D: call `policy.report()` into each run's `manifest.json`
+(gate G5), and the train-then-freeze orchestration for the R-1 run matrix (§9.1).
 
 ## Deleting this directory
 
