@@ -9,7 +9,8 @@ MinProp-3,computation,8.285462201996875
 Rand-1,computation,9.182895333831421
 Rand-2,computation,8.875749303810366
 Rand-3,computation,8.642428105684981
-SafeTail-1.0,computation,9.377219022391268
+SafeTail-1.0 (code),computation,9.377219022391268
+SafeTail-1.0 (paper),computation,9.1911133600489
 Oracle,computation,8.925848445742488
 SafeTail-2.0 (rerun),computation,8.92951194276529
 SafeTail-1.0 (slowpath s0),computation,9.826912110303606
@@ -23,7 +24,8 @@ MinProp-3,propagation,6.328441893635808
 Rand-1,propagation,43.71885485295116
 Rand-2,propagation,21.435094749711332
 Rand-3,propagation,12.038005161991443
-SafeTail-1.0,propagation,15.978548303108512
+SafeTail-1.0 (code),propagation,15.978548303108512
+SafeTail-1.0 (paper),propagation,10.125694491611766
 Oracle,propagation,5.865001471620367
 SafeTail-2.0 (rerun),propagation,24.494440671058886
 SafeTail-1.0 (slowpath s0),propagation,14.339299055898932
@@ -37,7 +39,8 @@ MinProp-3,transmission,20.152638728520003
 Rand-1,transmission,20.25858181077226
 Rand-2,transmission,20.208211641649118
 Rand-3,transmission,20.195639475650342
-SafeTail-1.0,transmission,20.199651339174533
+SafeTail-1.0 (code),transmission,20.199651339174533
+SafeTail-1.0 (paper),transmission,20.230498766102922
 Oracle,transmission,20.110871878466796
 SafeTail-2.0 (rerun),transmission,20.18930924403994
 SafeTail-1.0 (slowpath s0),transmission,20.196733002784757
@@ -51,7 +54,8 @@ MinProp-3,queueing,47.609167307206405
 Rand-1,queueing,40.842667822250895
 Rand-2,queueing,43.992330757318484
 Rand-3,queueing,50.504065122461455
-SafeTail-1.0,queueing,103.22894270153273
+SafeTail-1.0 (code),queueing,103.22894270153273
+SafeTail-1.0 (paper),queueing,102.32102063784555
 Oracle,queueing,93.24775958722181
 SafeTail-2.0 (rerun),queueing,91.36220353406236
 SafeTail-1.0 (slowpath s0),queueing,673.623990519731

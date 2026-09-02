@@ -62,9 +62,26 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(REPO / "dist"))
     ap.add_argument("--name", default="safetail_v1_baseline")
+    ap.add_argument("--version", default=None,
+                    help="explicit version like v4; default = auto-increment")
+    ap.add_argument("--note", default="", help="one-line note for PACKAGE_VERSIONS.md")
     args = ap.parse_args()
 
-    stage = Path(args.out) / args.name
+    # [SAFETAIL][PACKAGE][versioning] never overwrite a released zip. Auto-bump
+    # to the next free vN so every build stays retrievable and citable.
+    outdir = Path(args.out); outdir.mkdir(parents=True, exist_ok=True)
+    if args.version:
+        ver = args.version if args.version.startswith("v") else f"v{args.version}"
+    else:
+        used = []
+        for z in outdir.glob(f"{args.name}_v*.zip"):
+            tail = z.stem[len(args.name) + 2:]
+            if tail.isdigit():
+                used.append(int(tail))
+        ver = f"v{(max(used) + 1) if used else 1}"
+    versioned = f"{args.name}_{ver}"
+
+    stage = outdir / versioned
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
@@ -84,7 +101,16 @@ def main() -> int:
     for seed in (0, 1, 2):
         src = RESULTS / f"safetail_v1_legacy_s{seed}"
         if src.is_dir():
-            manifest["runs"][f"seed{seed}"] = copy_run(src, runs_dir / f"seed{seed}")
+            manifest["runs"][f"code_faithful_seed{seed}"] = copy_run(
+                src, runs_dir / "code_faithful" / f"seed{seed}")
+    # S-18: SafeTail 1.0 as PUBLISHED IN THE PAPER (Eq. 5 + Eq. 6). This is the
+    # correct referent for a comparison against the paper; the code-faithful runs
+    # above are kept because the divergence is itself a finding.
+    for seed in (0, 1, 2):
+        src = RESULTS / f"safetail_v1_paper_legacy_s{seed}"
+        if src.is_dir():
+            manifest["runs"][f"paper_faithful_seed{seed}"] = copy_run(
+                src, runs_dir / "paper_faithful" / f"seed{seed}")
     slow = RESULTS / "v1_legacy_s0"
     if slow.is_dir():
         manifest["runs"]["slowpath_seed0"] = copy_run(slow, runs_dir / "slowpath_seed0")
@@ -97,7 +123,8 @@ def main() -> int:
               REPO / "baselines" / "safetail_v1" / "state_v1.py",
               REPO / "baselines" / "safetail_v1" / "model_v1.py",
               REPO / "baselines" / "safetail_v1" / "train_v1.py",
-              REPO / "baselines" / "safetail_v1" / "policy_v1.py"):
+              REPO / "baselines" / "safetail_v1" / "policy_v1.py",
+              REPO / "baselines" / "safetail_v1" / "paper_v1.py"):
         if f.is_file():
             shutil.copy2(f, cfgdir / f.name)
 
@@ -142,7 +169,10 @@ def main() -> int:
     for src_doc, dst_name in (
             (RESULTS / "BASELINE_COMPARISON_REPORT.md", "REPORT.md"),
             (RESULTS / "RUN_PROVENANCE.md", "RUN_PROVENANCE.md"),
-            (REPO / "baselines" / "safetail_v1" / "README.md", "FAITHFULNESS_REGISTER.md")):
+            (REPO / "baselines" / "safetail_v1" / "README.md", "FAITHFULNESS_REGISTER.md"),
+            (REPO / "audit" / "ERRATA.md", "ERRATA.md"),
+            (REPO / "audit" / "BTP_REPORT_ERRORS.md", "BTP_REPORT_ERRORS.md"),
+            (REPO / "KNOWME.md", "KNOWME.md")):
         if src_doc.is_file():
             shutil.copy2(src_doc, stage / dst_name)
 
@@ -160,7 +190,29 @@ def main() -> int:
                                          encoding="utf-8")
     (stage / "README.md").write_text(_readme(manifest), encoding="utf-8")
 
-    # ---- zip --------------------------------------------------------------
+    # ---- version stamp + ledger + zip -------------------------------------
+    NL = chr(10)
+    version_lines = [f"{args.name} {ver}",
+                     str(manifest["created_utc"]),
+                     f"git {manifest['git_commit']}"]
+    (stage / "VERSION").write_text(NL.join(version_lines) + NL, encoding="utf-8")
+
+    manifest["version"] = ver
+    (stage / "MANIFEST.json").write_text(json.dumps(manifest, indent=2, default=str),
+                                         encoding="utf-8")
+
+    # cross-version ledger, so a reader can see what changed between builds
+    ledger = outdir / "PACKAGE_VERSIONS.md"
+    if not ledger.exists():
+        header = ["# Package version ledger", "",
+                  "| package | version | created (UTC) | git | note |",
+                  "|---|---|---|---|---|", ""]
+        ledger.write_text(NL.join(header), encoding="utf-8")
+    row = (f"| {args.name} | **{ver}** | {manifest['created_utc']} | "
+           f"`{manifest['git_commit'][:10]}` | {args.note or '-'} |")
+    with ledger.open("a", encoding="utf-8") as fh:
+        fh.write(row + NL)
+
     archive = shutil.make_archive(str(stage), "zip", root_dir=stage.parent,
                                   base_dir=stage.name)
     size = Path(archive).stat().st_size / 1024 / 1024

@@ -93,9 +93,20 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(REPO / "dist"))
     ap.add_argument("--name", default="safetail_budget3x_experiment")
+    ap.add_argument("--version", default=None, help="explicit vN; default = auto-increment")
+    ap.add_argument("--note", default="", help="one-line note for PACKAGE_VERSIONS.md")
     args = ap.parse_args()
 
-    stage = Path(args.out) / args.name
+    # [SAFETAIL][PACKAGE][versioning] never overwrite a released zip.
+    outdir = Path(args.out); outdir.mkdir(parents=True, exist_ok=True)
+    if args.version:
+        ver = args.version if args.version.startswith("v") else f"v{args.version}"
+    else:
+        used = [int(z.stem[len(args.name) + 2:]) for z in outdir.glob(f"{args.name}_v*.zip")
+                if z.stem[len(args.name) + 2:].isdigit()]
+        ver = f"v{(max(used) + 1) if used else 1}"
+
+    stage = outdir / f"{args.name}_{ver}"
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
@@ -140,8 +151,22 @@ def main() -> int:
     if rep.is_file():
         shutil.copy2(rep, stage / "BASELINE_COMPARISON_REPORT.md")
 
+    NL = chr(10)
+    manifest["version"] = ver
+    (stage / "VERSION").write_text(
+        NL.join([f"{args.name} {ver}", str(manifest["created_utc"]),
+                 f"git {manifest['git_commit']}"]) + NL, encoding="utf-8")
     (stage / "MANIFEST.json").write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
     (stage / "README.md").write_text(_readme(agg, manifest), encoding="utf-8")
+
+    ledger = outdir / "PACKAGE_VERSIONS.md"
+    if not ledger.exists():
+        ledger.write_text(NL.join(["# Package version ledger", "",
+                                   "| package | version | created (UTC) | git | note |",
+                                   "|---|---|---|---|---|", ""]), encoding="utf-8")
+    with ledger.open("a", encoding="utf-8") as fh:
+        fh.write(f"| {args.name} | **{ver}** | {manifest['created_utc']} | "
+                 f"`{manifest['git_commit'][:10]}` | {args.note or '-'} |" + NL)
 
     archive = shutil.make_archive(str(stage), "zip", root_dir=stage.parent, base_dir=stage.name)
     print(f"[SAFETAIL][PACKAGE] folder -> {stage}")

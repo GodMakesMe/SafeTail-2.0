@@ -37,7 +37,8 @@ PCTS = (50, 90, 95, 99)
 _STYLE = {
     "SafeTail-2.0 (shipped)":     "#0072B2",
     "SafeTail-2.0 (rerun)":       "#56B4E9",
-    "SafeTail-1.0":               "#D55E00",
+    "SafeTail-1.0 (code)":        "#D55E00",
+    "SafeTail-1.0 (paper)":       "#8B0000",
     "SafeTail-1.0 (slowpath s0)": "#E69F00",
     "Oracle":                     "#000000",
     "MinProp-1": "#009E73", "MinProp-2": "#00A67E", "MinProp-3": "#00B88A",
@@ -107,7 +108,8 @@ def discover_runs(extra: dict[str, Path] | None = None) -> dict[str, dict[int, p
                        REF / "baselines" / f"training_logs_{fam}_{k}" / f"{fam}_{k}_latency_log.csv")
 
     # our seeded runs from tools/run_matrix.py
-    for pattern, label in (("safetail_v1_legacy", "SafeTail-1.0"),
+    for pattern, label in (("safetail_v1_legacy", "SafeTail-1.0 (code)"),
+                           ("safetail_v1_paper_legacy", "SafeTail-1.0 (paper)"),
                            ("oracle_legacy", "Oracle"),
                            ("native_legacy", "SafeTail-2.0 (rerun)")):
         s = discover_seeded(pattern)

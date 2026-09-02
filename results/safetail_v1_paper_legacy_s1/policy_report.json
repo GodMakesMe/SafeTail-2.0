@@ -1,0 +1,19 @@
+{
+  "policy": "safetail_v1_paper",
+  "variant": "paper-faithful (Eq. 5 + Eq. 6)",
+  "selects": 15225,
+  "explore_frac": 0.31185550082101804,
+  "replay_steps": 15098,
+  "epsilon": 0.1,
+  "frozen": false,
+  "mean_access_rate": 0.30118883415435144,
+  "final_loss": 1.102543830871582,
+  "tau_by_type": {
+    "s": 0.0518,
+    "d": 0.0345,
+    "p": 0.0355
+  },
+  "delta": 0.005,
+  "hidden_layers": 5,
+  "hidden_width": 64
+}
