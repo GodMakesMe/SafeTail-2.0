@@ -57,6 +57,26 @@ C_RED_SWEEP = [0.0, 0.02, 0.05, 0.10, 0.20, 0.40]
 _mk = os.environ.get("SAFETAIL_MATCH_K", "").strip()
 MATCH_K = float(_mk) if _mk else None
 
+# [SAFETAIL][REWARD][B4][M-03] Which step reward the 2.0 agent optimises:
+#   "headroom"       -- BTP's resource-headroom product + B3 c_red cost (default;
+#                       reproduces the pre-B4 reward exactly)
+#   "tau"            -- SafeTail 1.0's tau-referenced 5-case tail-latency reward
+#                       ONLY (src/rewards.tau_reward_5case)
+#   "headroom+tau"   -- their sum
+# M-03: tail latency -- the stated objective of ST/HED/BTP -- otherwise never
+# appears in the 2.0 reward.
+REWARD_MODE = os.environ.get("SAFETAIL_REWARD_MODE", "headroom").strip() or "headroom"
+
+# tau per request type (seconds). Median service latency (comp+prop+trans) per
+# type from results/reference_v0/safetail_training_logs/latency_log.csv
+# (d 34.5 ms, p 35.5 ms, s 51.8 ms). Same source as baselines/safetail_v1
+# config; a single global tau is meaningless (S-14). plan.md 13.1(1).
+TAU_BY_TYPE = {
+    "s": float(os.environ.get("SAFETAIL_TAU_S", "0.0518")),
+    "d": float(os.environ.get("SAFETAIL_TAU_D", "0.0345")),
+    "p": float(os.environ.get("SAFETAIL_TAU_P", "0.0355")),
+}
+
 ############################### HYPERPARAMETERS ##########################
 median_computation_delay = 0.05
 total_no_request = 500000

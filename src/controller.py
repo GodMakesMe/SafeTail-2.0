@@ -608,6 +608,28 @@ class Controller:
         penalty = c_red * (k - 1) / (beta - 1)
         return mean_headroom - penalty
 
+    def _apply_tau_term(self, headroom_reward, request, action_subset, observed_latency_ms, mode):
+        """
+        [SAFETAIL][REWARD][FIX][B4][M-03] Fold the SafeTail 1.0 tau-referenced
+        5-case reward into the step reward.
+
+        `observed_latency_ms` is min realised latency over A, in ms; tau (per
+        request type, from constants.TAU_BY_TYPE) is in seconds.
+        """
+        try:
+            from rewards import tau_reward_5case
+            letter = str(getattr(request, "combination", "d"))[:1]
+            tau = constants.TAU_BY_TYPE.get(letter, constants.TAU_BY_TYPE.get("d", 0.05))
+            obs_s = float(observed_latency_ms) / 1000.0
+            r_tau, oob = tau_reward_5case(
+                obs_s, tau, len(action_subset), self.num_servers, float(constants.alpha))
+            if oob:
+                self._tau_out_of_band = getattr(self, "_tau_out_of_band", 0) + 1
+            return r_tau if mode == "tau" else (headroom_reward + r_tau)
+        except Exception as e:
+            print(f"[SAFETAIL][REWARD][B4] tau term failed: {type(e).__name__} - {e}")
+            return headroom_reward
+
     def compute_episodic_reward(self):
         """
         Compute episodic reward as per new architecture:
@@ -897,7 +919,8 @@ class Controller:
         # compute reward and track latency metrics
         try:
             final_step_reward_list = self.compute_step_reward(request, action_subset)
-            combined_step_reward = self._collapse_step_reward(final_step_reward_list, action_subset)
+            headroom_reward = self._collapse_step_reward(final_step_reward_list, action_subset)
+            combined_step_reward = headroom_reward   # default; may be adjusted by REWARD_MODE below
 
             # Track observed latency (minimum among selected servers)
             if len(action_subset) > 0 and hasattr(request, 'total_processing_delay'):
@@ -908,6 +931,14 @@ class Controller:
                 observed_latency = sorted_list[0]
                 request.contention_str = sorted_list[1]  # [SAFETAIL][FIX][D-19] not .combination
                 self.episode_latencies.append(observed_latency)
+
+                # [SAFETAIL][REWARD][FIX][B4][M-03] optional tau-referenced
+                # tail-latency term. REWARD_MODE in {headroom, tau, headroom+tau};
+                # "headroom" (default) reproduces the pre-B4 reward exactly.
+                mode = getattr(constants, "REWARD_MODE", "headroom")
+                if mode in ("tau", "headroom+tau"):
+                    combined_step_reward = self._apply_tau_term(
+                        headroom_reward, request, action_subset, observed_latency, mode)
                 # l.append([request_total_delay[i], combined_str, computation_delay_for_node, propagation_delay_for_node, tramission_delay_for_node])
 
                 # Track deviation from median
