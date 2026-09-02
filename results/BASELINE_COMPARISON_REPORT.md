@@ -124,16 +124,55 @@ so it spent the majority of the run exploiting a trained policy.
 SafeTail 2.0 converges by decile 5 and holds flat. SafeTail 1.0 reaches its best
 around decile 7 and then **degrades** on every seed. More training makes it worse.
 
-**Probable cause — architectural, not budgetary.** SafeTail 1.0's network ends in
-`softmax` + `categorical_crossentropy` (kept verbatim; changing it would make this
-"SafeTail 1.5"). Softmax forces the 31 action-values to sum to 1, and CCE expects
-a probability-distribution target — but the Bellman targets are negative real
-Q-values. The head **structurally cannot represent** the quantity being
-regressed, so additional updates drift rather than converge.
+**Cause — architectural, but in the *implementation*, not the paper.**
+The ported policy pairs a `softmax` + `categorical_crossentropy` head with
+**Bellman** targets (`r + γ·max Q(s′)`). Softmax forces the 31 outputs to sum to
+1 and CCE expects a probability-distribution target, but Bellman targets are
+negative reals. The head cannot represent them, so further updates drift.
 
-If that holds, it is the most interesting result here: **SafeTail 2.0's switch to
-a linear head with MSE loss is not incidental — it is what makes the Q-learning
-work at all.**
+> ### ⚠️ RETRACTION (added after external review)
+>
+> An earlier version of this section concluded that **SafeTail 1.0** is
+> architecturally broken, and that "2.0's switch to a linear head is what makes
+> Q-learning work at all". **That conclusion was wrong, and is withdrawn.**
+>
+> The diagnosis is correct about the code this baseline was ported from
+> (`_spec_source/v1_agent.py` = `github.com/Jyotishokhanda/SafeTail`). It is
+> **not** correct about the SafeTail 1.0 **paper**. The camera-ready §IV never
+> does Bellman bootstrapping. It translates the reward into a **target vector
+> that is a probability distribution** — "we ensure that the sum of all elements
+> in the target vector equals 1" — via Eq. 6:
+> `V_t(j) = max(0, 1/(2ⁿ−1) + R_{t+1})` for every `A_j` with `E_j ⊆ E_k`, with
+> the remaining mass spread equally over the rest. No γ, no `max` over the next
+> state. **That is exactly what softmax + cross-entropy requires. The paper is
+> self-consistent; the published code is not.**
+>
+> Verifying this turned up two further code-vs-paper divergences:
+>
+> * **Reward (Eq. 5).** Paper, late: `−δ·e^(n−|E_k|)`, depending only on
+>   redundancy headroom. Code: `−α·e^(n−|E_k|)·e^(L_R−τ)` — an extra lateness
+>   factor. Paper, early: `−δ·e^(L_R−τ)`, which *decays*. Code:
+>   `−α·e^(|E_k|−1)·e^(τ−L_R)` — exponent sign flipped so it *grows*. The
+>   paper's `L_R < τ, |E_k| = 1 ⇒ 0` case is missing from the code entirely.
+> * **Architecture.** Paper: "**5 hidden layers with ReLU** activations and a
+>   Softmax output layer". Code: 2 hidden layers, sigmoid, plus BatchNorm.
+>
+> Full detail: `audit/ERRATA.md` **S-18**, **S-19**, **S-20**. Credit for S-18
+> goes to an external reviewer of this work.
+>
+> **Consequence.** For a comparison against a *paper*, the paper is the correct
+> referent. The baseline therefore exists in two variants:
+>
+> | policy | faithful to |
+> |---|---|
+> | `safetail_v1` | the GitHub code (everything reported above) |
+> | `safetail_v1_paper` | the camera-ready paper, Eq. 5 + Eq. 6 |
+>
+> `baselines/safetail_v1/paper_v1.py` implements the paper version and is
+> **currently running** (3 seeds, same budget and physics). Until those numbers
+> are in, **every "SafeTail 1.0" figure in this report describes the published
+> implementation, not the published algorithm**, and the headline margin may
+> shrink or reverse. §1 is provisional pending that run.
 
 ### 3.1 The 3× budget experiment — resolved
 
@@ -231,13 +270,19 @@ supported.
 **Supported.**
 1. SafeTail 2.0 beats SafeTail 1.0 at every percentile on identical data
    (p95: 75.66 vs 89.72, −15.7%).
-2. SafeTail 1.0 is not under-trained at ANY budget tested: 3x the data moves its
-   converged p95 by 1.6% (85.57 -> 84.21) while its p99 worsens (111.13 ->
-   114.36). Its ceiling is architectural -- the softmax + categorical-crossentropy
-   head cannot represent negative real Q-values (SS3.1).
+2. The **code-faithful** SafeTail 1.0 is not under-trained at any budget tested:
+   3x the data moves its converged p95 by 1.6% (85.57 -> 84.21) while its p99
+   worsens (111.13 -> 114.36). Its ceiling is architectural -- but this is a
+   property of the GitHub implementation, which pairs Bellman targets with a
+   softmax+CCE head. The PAPER does neither (S-18); the paper-faithful variant
+   is running and this claim does not extend to it.
 3. Both learned policies lose heavily to MinProp at every percentile.
 
 **Not supported.**
+0. Anything about "SafeTail 1.0" as PUBLISHED. Everything above describes the
+   GitHub implementation, which differs from the camera-ready paper in its
+   target construction (S-18), its reward function (S-19) and its network
+   architecture (S-20). Do not attribute these results to the paper.
 1. That 2.0's advantage is a *scheduling-quality* result — it is confounded with
    a 39% larger replication budget (**D-09**). A K-matched comparison is required.
 2. Any tail-latency **win** over MinProp. BTP §6.2's headline ("SafeTail has
