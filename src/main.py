@@ -250,13 +250,11 @@ def main():
     seed = args.seed if args.seed is not None else constants.SEED
 
     if args.run:
-        run_direct(seed, args.chunks, args.episodes,
-                   log_folder=args.out or f"results/{args.label}", label=args.label)
-        return
+        return run_direct(seed, args.chunks, args.episodes,
+                          log_folder=args.out or f"results/{args.label}", label=args.label)
 
     if smoke:
-        run_smoke(seed, log_folder=args.out or "tools/out/smoke_logs")
-        return
+        return run_smoke(seed, log_folder=args.out or "tools/out/smoke_logs")
 
     if seed is not None:
         print(f"[SAFETAIL][MAIN] seeding -> {seed_everything(seed)}")

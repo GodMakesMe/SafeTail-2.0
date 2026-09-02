@@ -58,7 +58,10 @@ class SafeTailV1Policy(BasePolicy):
             action_idx = random.randrange(cfg.NA)
             self.n_explore += 1
         else:
-            q = self.model.predict(state.reshape(1, -1), verbose=0)[0]
+            # [SAFETAIL][POLICY][PERF] direct __call__, not predict(): identical
+            # maths, without the per-call data-pipeline setup that dominates a
+            # 2k-parameter net (this runs once per request, 15,225 times).
+            q = self.model(state.reshape(1, -1).astype("float32"), training=False).numpy()[0]
             action_idx = int(np.argmax(q))
 
         subset = index_to_subset(action_idx, ctx.beta)
@@ -107,6 +110,43 @@ class SafeTailV1Policy(BasePolicy):
     def finish_episode(self, episode_index: int) -> None:
         if cfg.FREEZE_AFTER_EPISODES and episode_index >= cfg.FREEZE_AFTER_EPISODES and not self.frozen:
             self.freeze()
+
+    # -- snapshots -------------------------------------------------------
+    def save_snapshot(self, out_dir, tag: str = "final") -> str | None:
+        """
+        [SAFETAIL][POLICY][SNAPSHOT] Persist the trained 1.0 network + the run
+        state needed to interpret or resume it.
+
+        Writes <out_dir>/snapshots/safetail_v1_<tag>.keras plus a sibling
+        .json with epsilon, replay/step counts, tau, and the V1-DEV-03 schedule
+        that produced it -- a checkpoint without its schedule is not reproducible.
+        """
+        import json
+        from pathlib import Path
+        d = Path(out_dir) / "snapshots"
+        d.mkdir(parents=True, exist_ok=True)
+        model_path = d / f"safetail_v1_{tag}.keras"
+        try:
+            self.model.save(model_path)
+        except Exception as e:  # noqa: BLE001
+            print(f"[SAFETAIL][POLICY][SNAPSHOT] model save failed: {type(e).__name__} - {e}")
+            return None
+        meta = self.report()
+        meta.update({
+            "tag": tag,
+            "gamma_decay": cfg.GAMMA_DECAY,
+            "gamma_decay_native": cfg.GAMMA_DECAY_NATIVE,
+            "eps_decay_fraction": cfg.EPS_DECAY_FRACTION,
+            "replay_every": cfg.REPLAY_EVERY,
+            "total_steps_assumed": cfg.TOTAL_STEPS,
+            "batch": cfg.BATCH, "gamma": cfg.GAMMA, "lr": cfg.LR,
+            "nS": cfg.NS, "nA": cfg.NA, "beta": cfg.BETA,
+            "model_path": str(model_path),
+        })
+        (d / f"safetail_v1_{tag}.json").write_text(json.dumps(meta, indent=2, default=str),
+                                                   encoding="utf-8")
+        print(f"[SAFETAIL][POLICY][SNAPSHOT] saved -> {model_path}")
+        return str(model_path)
 
     # -- helpers ---------------------------------------------------------
     def freeze(self) -> None:

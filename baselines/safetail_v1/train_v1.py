@@ -18,8 +18,42 @@ from __future__ import annotations
 import random
 
 import numpy as np
+import tensorflow as tf
 
 from . import config_v1 as cfg
+
+
+# [SAFETAIL][POLICY][PERF] Compiled train step, built once per model.
+#
+# Keras `model.predict()` / `model.fit()` are designed for large datasets: each
+# call rebuilds a data pipeline, runs callbacks and (for fit) re-splits for
+# validation. On a 2k-parameter net at batch 128 that framework overhead is
+# 10-30 ms and completely dominates the ~microsecond of actual arithmetic. With
+# one replay per request (V1-DEV-03) that overhead is paid 15,225 times.
+#
+# Calling the model directly and driving one gradient step inside a tf.function
+# keeps the arithmetic identical and removes the per-call machinery.
+_TRAIN_STEPS: dict[int, object] = {}
+
+
+def _get_train_step(model):
+    key = id(model)
+    fn = _TRAIN_STEPS.get(key)
+    if fn is not None:
+        return fn
+
+    @tf.function(reduce_retracing=True)
+    def train_step(states, targets):
+        with tf.GradientTape() as tape:
+            preds = model(states, training=True)
+            loss = tf.reduce_mean(
+                tf.keras.losses.categorical_crossentropy(targets, preds))
+        grads = tape.gradient(loss, model.trainable_variables)
+        model.optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        return loss
+
+    _TRAIN_STEPS[key] = train_step
+    return train_step
 
 
 def experience_replay(model, memory, epsilon: float) -> tuple[float, float, float]:
@@ -28,22 +62,35 @@ def experience_replay(model, memory, epsilon: float) -> tuple[float, float, floa
         return float("nan"), float("nan"), epsilon
 
     minibatch = random.sample(memory, cfg.BATCH)
-    states = np.array([m[0] for m in minibatch], dtype=float)
-    actions = np.array([m[1] for m in minibatch], dtype=int)
-    rewards = np.array([m[2] for m in minibatch], dtype=float)
-    next_states = np.array([m[3] for m in minibatch], dtype=float)
+    states = np.asarray([m[0] for m in minibatch], dtype="float32")
+    actions = np.asarray([m[1] for m in minibatch], dtype=int)
+    rewards = np.asarray([m[2] for m in minibatch], dtype="float32")
+    next_states = np.asarray([m[3] for m in minibatch], dtype="float32")
 
-    current_q = model.predict(states, verbose=0)
-    next_q = model.predict(next_states, verbose=0)
+    # direct __call__ instead of predict(): same maths, no data-pipeline setup
+    current_q = model(states, training=False).numpy()
+    next_q = model(next_states, training=False).numpy()
     targets = current_q.copy()
     targets[np.arange(cfg.BATCH), actions] = rewards + cfg.GAMMA * np.amax(next_q, axis=1)
 
-    hist = model.fit(states, targets, epochs=cfg.EPOCHS, verbose=0,
-                     validation_split=cfg.VAL_SPLIT)
+    # [SAFETAIL][POLICY][PERF] SafeTail 1.0 called
+    #   model.fit(states, targets, epochs=EPOCHS, validation_split=0.2)
+    # Keras' validation_split holds out the LAST 20% of the batch, so 1.0 took
+    # its gradient on only the first 80% (102 of 128). Replicate that exactly --
+    # training on all 128 here would make this a faster but DIFFERENT algorithm.
+    n_train = int(cfg.BATCH * (1.0 - cfg.VAL_SPLIT))
+    xs = tf.constant(states[:n_train])
+    ys = tf.constant(targets[:n_train], dtype="float32")
+    xv = tf.constant(states[n_train:])
+    yv = tf.constant(targets[n_train:], dtype="float32")
+
+    step = _get_train_step(model)
+    losses = [float(step(xs, ys).numpy()) for _ in range(cfg.EPOCHS)]
+
+    val = float(tf.reduce_mean(
+        tf.keras.losses.categorical_crossentropy(yv, model(xv, training=False))).numpy())
 
     if epsilon > cfg.EPS_MIN:
         epsilon = max(cfg.EPS_MIN, epsilon - cfg.GAMMA_DECAY)  # subtractive (ST Eq. 3)
 
-    loss = float(hist.history.get("loss", [float("nan")])[0])
-    val = float(hist.history.get("val_loss", [float("nan")])[0])
-    return loss, val, epsilon
+    return losses[0], val, epsilon

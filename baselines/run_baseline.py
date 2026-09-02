@@ -61,7 +61,23 @@ def main() -> int:
     else:
         sys.argv = [sys.argv[0], *passthrough]
     import main as src_main
-    src_main.main()
+    controller = src_main.main()
+
+    # [SAFETAIL][POLICY][SNAPSHOT] persist the trained policy + its schedule.
+    try:
+        pol = getattr(controller, "policy", None)
+        out = getattr(src_main.constants, "training_log_folder", ".")
+        if pol is not None and hasattr(pol, "save_snapshot"):
+            pol.save_snapshot(out, tag="final")
+        if pol is not None and hasattr(pol, "report"):
+            import json
+            from pathlib import Path
+            Path(out).mkdir(parents=True, exist_ok=True)
+            (Path(out) / "policy_report.json").write_text(
+                json.dumps(pol.report(), indent=2, default=str), encoding="utf-8")
+            print(f"[SAFETAIL][POLICY] report -> {out}/policy_report.json")
+    except Exception as e:  # noqa: BLE001
+        print(f"[SAFETAIL][POLICY][SNAPSHOT] post-run save failed: {type(e).__name__} - {e}")
     return 0
 
 
