@@ -223,3 +223,6 @@ training_logs_*/
 smoke_logs/
 results/_*.log
 results/_validate/
+dist/
+results/_superseded/
+results/_matrix_logs/

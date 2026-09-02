@@ -79,13 +79,22 @@ def experience_replay(model, memory, epsilon: float) -> tuple[float, float, floa
     # its gradient on only the first 80% (102 of 128). Replicate that exactly --
     # training on all 128 here would make this a faster but DIFFERENT algorithm.
     n_train = int(cfg.BATCH * (1.0 - cfg.VAL_SPLIT))
-    xs = tf.constant(states[:n_train])
-    ys = tf.constant(targets[:n_train], dtype="float32")
+    xs_all = states[:n_train]
+    ys_all = targets[:n_train].astype("float32")
     xv = tf.constant(states[n_train:])
     yv = tf.constant(targets[n_train:], dtype="float32")
 
+    # ...and Keras fit() defaults to batch_size=32, so 1.0 took
+    # ceil(102/32) * EPOCHS = 8 gradient updates of 32 per replay, NOT 2
+    # full-batch updates of 102. Replicate the minibatching too -- the update
+    # COUNT and SIZE change the optimisation dynamics, not just the wall time.
     step = _get_train_step(model)
-    losses = [float(step(xs, ys).numpy()) for _ in range(cfg.EPOCHS)]
+    losses = []
+    for _ in range(cfg.EPOCHS):
+        for i in range(0, n_train, cfg.KERAS_BATCH):
+            xb = tf.constant(xs_all[i:i + cfg.KERAS_BATCH])
+            yb = tf.constant(ys_all[i:i + cfg.KERAS_BATCH])
+            losses.append(float(step(xb, yb).numpy()))
 
     val = float(tf.reduce_mean(
         tf.keras.losses.categorical_crossentropy(yv, model(xv, training=False))).numpy())

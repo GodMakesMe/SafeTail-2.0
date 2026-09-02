@@ -34,14 +34,25 @@ REF = REPO / "results" / "reference_v0"
 PCTS = (50, 90, 95, 99)
 
 # Order + colour is stable across every figure so panels can be read together.
-STYLE = {
-    "SafeTail-2.0 (het)": "#0072B2",
-    "SafeTail-1.0":       "#D55E00",
-    "Oracle":             "#000000",
+_STYLE = {
+    "SafeTail-2.0 (shipped)":     "#0072B2",
+    "SafeTail-2.0 (rerun)":       "#56B4E9",
+    "SafeTail-1.0":               "#D55E00",
+    "SafeTail-1.0 (slowpath s0)": "#E69F00",
+    "Oracle":                     "#000000",
     "MinProp-1": "#009E73", "MinProp-2": "#00A67E", "MinProp-3": "#00B88A",
     "MinLoad-1": "#CC79A7", "MinLoad-2": "#D98CB6", "MinLoad-3": "#E6A0C5",
     "Rand-1": "#999999", "Rand-2": "#AAAAAA", "Rand-3": "#BBBBBB",
 }
+
+
+class _Style(dict):
+    """Never hand matplotlib a None colour."""
+    def get(self, k, default="#777777"):        # noqa: A003
+        return dict.get(self, k, default) or default
+
+
+STYLE = _Style(_STYLE)
 
 
 # --------------------------------------------------------------------------- #

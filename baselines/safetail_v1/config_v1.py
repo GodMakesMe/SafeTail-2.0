@@ -55,6 +55,10 @@ BATCH = 128
 REPLAY_MAXLEN = 2500
 EPOCHS = 2
 VAL_SPLIT = 0.2
+# Keras fit()'s default minibatch size. 1.0 called fit(x, y, epochs=2) without a
+# batch_size, so it took ceil(102/32)*2 = 8 gradient updates of 32 per replay.
+# The fast path replicates that exactly (see train_v1.experience_replay).
+KERAS_BATCH = 32
 
 # A-4: RESOLUTION is omitted (2.0 has no resolution attribute; the 1.0
 # instance/noise configs also omit it). => nS = 2*beta + 2, not 2*beta + 3.
