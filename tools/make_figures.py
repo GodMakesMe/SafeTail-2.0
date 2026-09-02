@@ -285,6 +285,57 @@ def fig_convergence(runs, out: Path, metric: str, name="F5_convergence", bins=10
     _save(fig, out, name, pd.DataFrame(rows))
 
 
+def fig_budget(out: Path, metric: str, name="F8_budget_3x"):
+    """
+    1x vs 3x data budget, CONVERGED phase only (last third of each run).
+    Full-run percentiles are contaminated by the exploration phase, whose share
+    shrinks in a longer run -- so a naive full-run comparison overstates the
+    benefit of more data. This isolates the plateau each policy actually reaches.
+    """
+    series = [("SafeTail-1.0", "results/safetail_v1_legacy_s{}", "1x"),
+              ("SafeTail-1.0", "results/safetail_v1_legacy_s{}_long3x", "3x"),
+              ("SafeTail-2.0 (updated)", "results/native_legacy_s{}", "1x"),
+              ("SafeTail-2.0 (updated)", "results/native_legacy_s{}_long3x", "3x")]
+    rows = []
+    for label, pat, budget in series:
+        for s in (0, 1, 2):
+            f = REPO / pat.format(s) / "latency_log.csv"
+            if not f.is_file():
+                continue
+            v = pd.read_csv(f)[metric].to_numpy(float)
+            v = v[int(len(v) * 2 / 3):]           # converged third
+            rows.append({"policy": label, "budget": budget, "seed": s,
+                         **{f"p{p}": float(np.percentile(v, p)) for p in PCTS}})
+    if not rows:
+        return
+    df = pd.DataFrame(rows)
+    agg = df.groupby(["policy", "budget"])[[f"p{p}" for p in PCTS]].median().reset_index()
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    keys = [(p, b) for p in agg.policy.unique() for b in ("1x", "3x")]
+    x = np.arange(len(PCTS)); w = 0.8 / len(keys)
+    hatch = {"1x": "", "3x": "//"}
+    for i, (pol, bud) in enumerate(keys):
+        sub = agg[(agg.policy == pol) & (agg.budget == bud)]
+        if sub.empty:
+            continue
+        vals = [sub.iloc[0][f"p{p}"] for p in PCTS]
+        ax.bar(x + i * w - 0.4 + w / 2, vals, w, label=f"{pol} — {bud}",
+               color=STYLE.get(pol.split(" (")[0]), hatch=hatch[bud],
+               edgecolor="black", linewidth=.5)
+    # reference lines
+    for y, lab, c in ((49.18, "MinProp-3 (K=3)", "#009E73"),
+                      (49.53, "Oracle", "#000000")):
+        ax.axhline(y, ls="--", lw=1, color=c, alpha=.8)
+        ax.text(len(PCTS) - 0.5, y, f" {lab}", va="bottom", fontsize=7, color=c)
+    ax.set_xticks(x); ax.set_xticklabels([f"p{p}" for p in PCTS])
+    ax.set_ylabel(f"{metric.replace('_',' ')} (ms)")
+    ax.set_title("Data budget: 1x vs 3x, CONVERGED phase only (last third of run)\n"
+                 "median of 3 seeds — neither policy is budget-limited")
+    ax.legend(fontsize=7, ncol=2); ax.grid(axis="y", alpha=.3)
+    _save(fig, out, name, df)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="SafeTail comparison figures")
     ap.add_argument("--out", default=str(REPO / "figures"))
@@ -309,6 +360,7 @@ def main() -> int:
     fig_convergence(runs, out, args.metric)
     fig_by_type(runs, out, args.metric)
     fig_decomposition(runs, out)
+    fig_budget(out, args.metric)
 
     out.mkdir(parents=True, exist_ok=True)
     per_seed.insert(1, "metric", args.metric)

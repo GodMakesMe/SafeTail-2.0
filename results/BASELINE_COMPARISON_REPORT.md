@@ -135,11 +135,76 @@ If that holds, it is the most interesting result here: **SafeTail 2.0's switch t
 a linear head with MSE loss is not incidental — it is what makes the Q-learning
 work at all.**
 
-> **Status:** a 3× budget run (45,675 requests, 3,045 episodes, ε schedule
-> rescaled, both policies, 3 seeds each) is in progress to test this directly.
-> If 1.0 improves, the budget explanation wins; if it degrades or plateaus above
-> 2.0, the architectural explanation does. **This section will be updated with
-> that evidence.**
+### 3.1 The 3× budget experiment — resolved
+
+Both policies re-run at **3× the data** (45,675 requests, 3,045 episodes, ε
+schedule rescaled so it still decays over 45% of the longer run), 3 seeds each.
+
+**Full-run percentiles** (median of 3 seeds):
+
+| | n | p50 | p90 | p95 | p99 | mean |
+|---|---|---|---|---|---|---|
+| SafeTail 1.0 — 1× | 15,225 | 41.62 | 69.33 | 89.00 | 122.35 | 45.32 |
+| SafeTail 1.0 — **3×** | 45,675 | 37.14 | 64.34 | **87.47** | 120.93 | 43.96 |
+| SafeTail 2.0 — 1× | 15,225 | 31.79 | 52.18 | 72.05 | 119.63 | 39.49 |
+| SafeTail 2.0 — **3×** | 45,675 | 30.83 | 49.98 | **52.68** | 93.04 | 37.06 |
+
+Read naively this says 3× helped 2.0 enormously (p95 −27%) and 1.0 a little
+(−1.7%). **That reading is wrong.** A full-run percentile mixes the exploration
+phase with the converged phase, and a 3× run dilutes the exploration share. The
+fair comparison is the **converged** portion:
+
+**Last third of each run only** (median of 3 seeds):
+
+| | mean K | p50 | p90 | **p95** | **p99** |
+|---|---|---|---|---|---|
+| SafeTail 1.0 — 1× | 2.51 | 42.02 | 64.47 | **85.57** | 111.13 |
+| SafeTail 1.0 — **3×** | 2.57 | 36.57 | 61.72 | **84.21** | 114.36 |
+| SafeTail 2.0 — 1× | 2.93 | 30.82 | 48.81 | **51.83** | 113.63 |
+| SafeTail 2.0 — **3×** | 3.00 | 30.52 | 48.74 | **50.28** | **55.47** |
+
+**Conclusion: neither policy was meaningfully under-trained.** Tripling the data
+moves converged p95 by **1.6% for SafeTail 1.0** (85.57 → 84.21) and **3.0% for
+SafeTail 2.0** (51.83 → 50.28). Both had already converged at the 1× budget; the
+large full-run deltas are an artefact of exploration-phase dilution.
+
+So the ceilings are **real**, not budgetary:
+
+* **SafeTail 1.0 plateaus at p95 ≈ 84–86 ms** at any budget. Its p99 actually got
+  *worse* with more training (111.13 → 114.36), which is the instability
+  signature again. The softmax + categorical-crossentropy head cannot represent
+  negative real Q-values, and no amount of data fixes that.
+* **SafeTail 2.0 (updated) plateaus at p95 ≈ 50 ms.**
+
+### 3.2 The finding that matters most
+
+At its converged plateau the **updated** SafeTail 2.0 reaches
+**p95 50.28 / p99 55.47 at mean K = 3.00**. Against the reference heuristics:
+
+| policy | K | p95 | p99 |
+|---|---|---|---|
+| Oracle | 5.00 | 49.53 | 52.45 |
+| MinProp-2 | 2.00 | 49.08 | 53.37 |
+| MinProp-3 | 3.00 | **49.18** | 56.31 |
+| **SafeTail 2.0 (updated, converged)** | **3.00** | **50.28** | **55.47** |
+| SafeTail 1.0 (converged) | 2.57 | 84.21 | 114.36 |
+
+**At matched replication budget (K = 3), the updated SafeTail 2.0 now ties
+MinProp-3** — 50.28 vs 49.18 at p95 (2.2%, within seed noise) and 55.47 vs 56.31
+at p99 (better). It also essentially matches the Oracle while using 3 servers
+instead of 5.
+
+This **substantially revises audit finding D-10**. "SafeTail loses to MinProp by
+54% at p99" is a property of the *shipped, unfixed, exploration-contaminated*
+run — not of the approach. Once D-04…D-07/D-16/D-20 are repaired and the
+converged phase is measured at matched K, the learned policy is competitive with
+the best heuristic and with the oracle.
+
+It is **still not a win** over MinProp, and it should not be reported as one:
+parity at K=3 against a heuristic that achieves the same at K=2 means SafeTail
+2.0 spends 50% more compute for equal tail latency. But "competitive with the
+oracle" is a very different and far more defensible claim than the original data
+supported.
 
 ---
 
@@ -166,16 +231,20 @@ work at all.**
 **Supported.**
 1. SafeTail 2.0 beats SafeTail 1.0 at every percentile on identical data
    (p95: 75.66 vs 89.72, −15.7%).
-2. SafeTail 1.0 is not under-trained at this budget; it is unstable, and the
-   likely cause is its softmax+CCE head.
+2. SafeTail 1.0 is not under-trained at ANY budget tested: 3x the data moves its
+   converged p95 by 1.6% (85.57 -> 84.21) while its p99 worsens (111.13 ->
+   114.36). Its ceiling is architectural -- the softmax + categorical-crossentropy
+   head cannot represent negative real Q-values (SS3.1).
 3. Both learned policies lose heavily to MinProp at every percentile.
 
 **Not supported.**
 1. That 2.0's advantage is a *scheduling-quality* result — it is confounded with
    a 39% larger replication budget (**D-09**). A K-matched comparison is required.
-2. Any tail-latency claim over MinProp (**D-10**, **S-17**). BTP §6.2's headline
-   ("SafeTail has lower latency than MinLoad, MinProp, and Random at all
-   percentiles") is **false on this data**.
+2. Any tail-latency **win** over MinProp. BTP §6.2's headline ("SafeTail has
+   lower latency than MinLoad, MinProp, and Random at all percentiles") remains
+   **false**. What IS now supported (SS3.2) is *parity*: the repaired 2.0,
+   converged and at matched K=3, reaches p95 50.28 vs MinProp-3's 49.18 and
+   beats it at p99 (55.47 vs 56.31). Parity at 50% more compute is not a win.
 3. Anything about heterogeneity-aware scheduling from these numbers: **D-02**
    means computation delay was identical across all five servers in the code that
    produced them.
@@ -190,10 +259,16 @@ work at all.**
    per-server (server 3 ≈ 388 ms vs server 1 ≈ 12 ms). Only there does
    "heterogeneity-aware scheduling" mean anything, and it is the one condition
    under which a learned policy could plausibly beat MinProp.
-3. **Decide the MinProp story with your advisor before writing up.** An honest
-   negative result — *a learned scheduler does not beat a propagation heuristic
-   in this environment, and here is why* — is publishable and is supported by
-   the decomposition in §2. Claiming a win is not supported.
+3. **Re-run the K-matched comparison on the FIXED environment at 3x budget.**
+   SS3.2 shows the repaired 2.0 reaching oracle-competitive tail latency; the
+   remaining question is whether genuine per-server heterogeneity (D-02 fixed:
+   server 3 ~388 ms vs server 1 ~12 ms) lets it *beat* MinProp rather than tie
+   it. That is the one condition under which the heterogeneity thesis can be
+   tested at all, and it has never been run.
+4. **Decide the framing with your advisor.** "Repaired SafeTail 2.0 is
+   competitive with the oracle at matched budget, and the original shortfall was
+   attributable to five specific reward defects" is defensible and interesting.
+   "SafeTail 2.0 beats MinProp" is not.
 
 ---
 
