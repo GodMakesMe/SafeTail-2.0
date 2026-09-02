@@ -116,6 +116,8 @@ def check_legacy_wrappers() -> None:
     for s in range(1, 6):
         folder = SRC / f"server{s}_regressor"
         if not folder.is_dir():
+            folder = SRC / "_legacy_regressor_wrappers" / f"server{s}_regressor"
+        if not folder.is_dir():
             continue
         for letter, script in LETTER_TO_SCRIPT.items():
             wrapper = folder / f"{script}_predictor.py"

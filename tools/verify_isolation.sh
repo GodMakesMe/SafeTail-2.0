@@ -12,7 +12,7 @@
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 2
-export PYTHONUTF8=1
+export PYTHONUTF8=1 KMP_DUPLICATE_LIB_OK=TRUE
 PY="${SAFETAIL_PY:-$REPO/.venv/Scripts/python.exe}"
 [ -x "$PY" ] || PY="python"
 

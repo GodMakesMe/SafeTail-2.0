@@ -31,6 +31,13 @@ POLICY = os.environ.get("POLICY", "native").strip() or "native"
 SMOKE_CHUNKS = _env_int("SAFETAIL_SMOKE_CHUNKS", 60)   # 60 * chunk_size(5) = 300 requests
 SMOKE_EPISODES = _env_int("SAFETAIL_SMOKE_EPISODES", 20)
 
+# [SAFETAIL][REGRESSOR][D-02c] When False (default), a regressor that fails to
+# load or a missing contention trace row is a HARD error -- the collapse is no
+# longer silent. When True, degradation is allowed but logged [DEGRADED][D-02c]
+# and counted in the run manifest; a run with any [DEGRADED] count > 0 is not
+# publishable (gate G5).
+ALLOW_DEGRADED_PREDICTORS = _env_flag("SAFETAIL_ALLOW_DEGRADED_PREDICTORS")
+
 ############################### HYPERPARAMETERS ##########################
 median_computation_delay = 0.05
 total_no_request = 500000
