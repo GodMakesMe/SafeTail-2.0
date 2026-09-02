@@ -38,6 +38,15 @@ SMOKE_EPISODES = _env_int("SAFETAIL_SMOKE_EPISODES", 20)
 # publishable (gate G5).
 ALLOW_DEGRADED_PREDICTORS = _env_flag("SAFETAIL_ALLOW_DEGRADED_PREDICTORS")
 
+# [SAFETAIL][REWARD][B3][M-04][S-02] Redundancy price. The step reward gets an
+# explicit cost  c_red * (|A|-1)/(beta-1)  subtracted, so replicating to more
+# servers is no longer free (root cause of D-07 over-replication). c_red = 0.0
+# reproduces the pre-B3 (un-priced) reward exactly.
+# Source: "chosen, see plan.md B3". Unit: reward points (reward is in [0, log2]).
+# SWEEP for the publishable K-vs-c_red ablation (plan.md B3 accept / figure F8):
+C_RED = float(os.environ.get("SAFETAIL_C_RED", "0.0"))
+C_RED_SWEEP = [0.0, 0.02, 0.05, 0.10, 0.20, 0.40]
+
 ############################### HYPERPARAMETERS ##########################
 median_computation_delay = 0.05
 total_no_request = 500000

@@ -577,6 +577,37 @@ class Controller:
 
         return rewards
 
+    def _collapse_step_reward(self, per_server_rewards, action_subset):
+        """
+        [SAFETAIL][REWARD][FIX][D-07][M-04][S-02] Collapse the per-server headroom
+        rewards to one scalar AND price redundancy.
+
+            R_step = (1/|A|) * sum_{i in A} log(1 + headroom_i)
+                     - c_red * (|A| - 1) / (beta - 1)
+
+        Two changes vs the old `np.mean(per_server_rewards)`:
+          * the mean is over the SELECTED servers |A|, not a constant 6 (the
+            phantom slot from server_dicts length 6 -- W-02 -- also drops out);
+          * an explicit cost, linear in the redundancy count, subtracts from the
+            reward. c_red = 0 reproduces the old (un-priced) behaviour.
+
+        S-02: this is NOT HED's `Sum(l_i - l_bar) - W_step` term (that was
+        sign-inverted for load balancing). BTP correctly replaced the load term
+        with the headroom product but dropped every |A|-sensitive quantity;
+        `c_red` restores redundancy pricing without the HED sign bug.
+        """
+        idx = [int(i) for i in action_subset] if action_subset is not None else \
+              list(range(len(per_server_rewards)))
+        idx = [i for i in idx if 0 <= i < len(per_server_rewards)]
+        if not idx:
+            return 0.0
+        mean_headroom = float(np.mean([per_server_rewards[i] for i in idx]))
+        k = len(idx)
+        beta = max(2, self.num_servers)
+        c_red = float(getattr(constants, "C_RED", 0.0))
+        penalty = c_red * (k - 1) / (beta - 1)
+        return mean_headroom - penalty
+
     def compute_episodic_reward(self):
         """
         Compute episodic reward as per new architecture:
@@ -851,7 +882,7 @@ class Controller:
         # compute reward and track latency metrics
         try:
             final_step_reward_list = self.compute_step_reward(request, action_subset)
-            combined_step_reward = np.mean(final_step_reward_list)
+            combined_step_reward = self._collapse_step_reward(final_step_reward_list, action_subset)
 
             # Track observed latency (minimum among selected servers)
             if len(action_subset) > 0 and hasattr(request, 'total_processing_delay'):
