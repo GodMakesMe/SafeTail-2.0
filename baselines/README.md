@@ -1,0 +1,41 @@
+# `baselines/` — a deletable unit
+
+Everything in this directory is **optional**. Deleting the whole tree must leave a fully
+working SafeTail 2.0 repository. That property is a hard requirement (plan.md R3) and is
+enforced by gate **G4** (`tools/verify_isolation.sh`).
+
+## The rules
+
+1. `src/` **never** imports anything from `baselines/`. One direction only.
+2. `baselines/` touches `src/` through exactly one module: `src/policy_registry.py`
+   (see plan.md §8.3). Nothing else.
+3. `safetail_v1/_spec_source/` holds frozen, **read-only** copies of the SafeTail 1.0
+   source, taken from `E:\Project\IP_Arani\SafeTail\` (upstream:
+   `github.com/Jyotishokhanda/SafeTail`). They exist **to be read while porting**.
+   They are never imported, never executed, never edited. Gate G4c greps for violations.
+4. The SafeTail 1.0 baseline is a **port**, not a bridge: it reimplements the 1.0
+   *algorithm* (specified in plan.md §14.1) against the SafeTail 2.0 environment, so both
+   policies are graded by the same servers, traces and admission rules.
+
+## Status
+
+Scaffold only. Nothing here is implemented yet.
+
+| Piece | Plan section | State |
+|---|---|---|
+| `src/policy_registry.py` seam | §8.3 | not written |
+| `common/env_adapter.py` (`ctx`) | §8.4 | not written |
+| `oracle/policy_oracle.py` (M-01) | §8.7 | not written — **do this first**, it proves the seam |
+| `safetail_v1/` (M-02) | §8.5, §8.6, §14.1 | not written — needs B8 first (`ctx.request_type`) |
+
+## Deleting this directory
+
+```bash
+rm -rf baselines/
+python -c "import sys; sys.path.insert(0,'src'); import policy_registry, controller, main"
+POLICY=native BASELINE_MODE=safetail  python src/main.py --smoke
+POLICY=native BASELINE_MODE=minload_2 python src/main.py --smoke
+POLICY=safetail_v1 python src/main.py --smoke   # must fail loudly, listing known policy names
+```
+
+All four behaviours must hold.
