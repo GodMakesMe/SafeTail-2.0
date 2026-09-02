@@ -1,0 +1,133 @@
+src: correctness repairs to the heterogeneous scheduler (D-01 .. D-35)
+
+Audit-driven bug fixes to SafeTail 2.0's src/. No new top-level directories;
+plan / audit / baseline-seam / test tooling are intentionally excluded from
+this PR. Every change carries a [SAFETAIL][...][D-xx] tag at the fix site.
+
+CORRECTNESS
+
+D-01  requirements.txt: re-encode UTF-16LE+CRLF -> UTF-8/LF and add
+      scikit-learn==1.4.2 (the version the models/*/*.pkl were saved with),
+      scipy, seaborn, joblib, threadpoolctl. A clean install per the repo's
+      own instructions previously had no sklearn, so every regressor unpickle
+      raised ModuleNotFoundError and the failure was swallowed (D-02c).
+
+D-02 / D-02b / D-02c  src/regressors.py (new) + src/servers.py:
+      all 15 per-server wrappers hardcoded models/server1/ + dataset/server1.csv,
+      so servers 2-5 predicted computation delay with server 1's model. Replaced
+      by one parameterised TracePredictor(server_index, task); server i now loads
+      models/server{i}/ + dataset/server{i}.csv. Ports the three distinct feature
+      schemas the shipped models actually use, selected by each bundle's own
+      feature_columns. server 2 aliases server 1 (its CSV is byte-identical and
+      its model needs columns that CSV lacks). The sys.modules module-name
+      collision is gone (one module, index is an argument). A load failure or a
+      missing contention trace row now RAISES unless
+      constants.ALLOW_DEGRADED_PREDICTORS (default False); the old code silently
+      returned the contention-free single-letter latency.
+      Effect: mean computation delay per server is now
+        server1/2 ~12 ms | server3 ~388 ms | server4 ~266 ms | server5 ~13 ms
+      (was ~12 ms for all five). Legacy wrappers moved to
+      src/_legacy_regressor_wrappers/ (unimported; DEPRECATED.md).
+
+D-04 / D-05 / D-06  src/controller.py + src/agent.py:
+      the replay buffer stored the live Request object and flattened it only at
+      episode end, by which time it held the realised latencies, contention
+      string and queue-wait of its own action; state and next_state were the
+      same object; and every step reward was overwritten with the single
+      episodic reward. Now: s_t is snapshotted as an array at action time
+      (before scheduling), s_{t+1} after; DQNAgent.store_arrays() takes the
+      pre-flattened arrays; the per-step reward is kept and the episodic reward
+      is added as a broadcast R_ep/N bonus.
+
+D-07  src/controller.py Controller._collapse_step_reward():
+      the step reward was np.mean() over all 6 server_dict slots, so every extra
+      server added a non-negative term to a fixed denominator -- nothing priced
+      redundancy. Now: mean over the SELECTED servers, minus an explicit cost
+      c_red * (|A|-1)/(beta-1) (constants.C_RED, default 0.0 => old behaviour;
+      C_RED_SWEEP for the ablation).
+
+D-16  compute_step_reward(): CPU-only servers (no GPU columns -> servers 3, 4)
+      got (1-0)(1-0)=1 for the two GPU headroom factors, structurally inflating
+      their reward. Now the GPU factors are dropped for such servers and the
+      headroom product is renormalised as a geometric mean of the available
+      factors. Range stays [0, log 2]; docstring now states the formula that is
+      actually computed (D-27).
+
+D-17  compute_step_reward() failure path wrote rewards[server_idx - 1] = 0.0,
+      corrupting a neighbour's slot and leaving server 0 at its initialised
+      value. Now writes rewards[server_idx].
+
+D-18  (partial) the phase-2 estimate the policy sees is preserved on the request
+      and reused by the read-only PolicyContext; a full single-draw refactor of
+      servers.compute_request_time is left for a follow-up.
+
+D-19  src/user.py + src/servers.py + src/controller.py: schedule_request()
+      overwrote request.combination with the contention string ("d" -> "dps"),
+      so the request_type column of latency_log.csv held 192 distinct values.
+      New immutable Request.contention_str; combination stays the type letter;
+      latency_log.csv gains a contention_str column.
+
+D-20  request_*_done counters were incremented unconditionally, so the
+      completion ratio in the episodic wait-time denominator was identically
+      1.0. Now incremented only when T <= D2, at the one site T is known.
+
+D-21  src/controller.py process_step(): unbounded self-recursion under
+      saturation (sleep 0.1 s + recurse) replaced with a bounded retry loop
+      (6x, exponential backoff, cap 0.8 s) + an explicit drop and
+      Controller.dropped_requests counter.
+
+D-28  deleted Controller.assign_request() -- it unpacked 3 values from
+      schedule_request()'s 7-tuple and raised on any call; unreachable dead
+      code. dispatch_to_agent() (unused one-liner) removed with it.
+
+D-31  src/receiver.py: refuse any non-loopback bind and cap the payload at
+      8 MiB around np.load(allow_pickle=True) of socket data (RCE surface if the
+      port ever leaves localhost).
+
+DOCUMENTATION / HYGIENE
+
+D-13  README.md "Queueing Model": the M/M/1 claim (W = lambda/(mu(mu-lambda)))
+      is replaced with the reality -- an M/M/c/c Erlang-B loss system (c=4,
+      rejects when full), uniform (not Poisson) arrivals, wall-clock wait time.
+      A correction banner is added at the top.
+
+D-14  run_all_baselines.sh: $SAFETAIL_PY (defaults to a repo venv) instead of a
+      hardcoded /home/jyoti/miniconda3/bin/python; K ranges 1..beta; a seed
+      loop; output to results/<mode>_k<K>_s<seed>_<sha>/.
+
+D-29 / D-30  dead code / constants tagged [SAFETAIL][DEAD][D-xx] with the reason
+      (get_queue_lengths, save_checkpoint, export_training_data,
+      generate_testing_plots, DQNAgent.get_min_delay; nS, episode_size,
+      max_load).
+
+D-33 / D-35  constants.py annotations: the run processes ~15,225 requests, not
+      total_no_request (500,000); nS is dead -- the encoder input is
+      variable-length from hardware heterogeneity, not a fixed (beta+1) vector.
+
+NEW CAPABILITY (small, needed to run / verify the above)
+
+* src/constants.py: SMOKE / SEED / POLICY / REWARD_MODE / C_RED / MATCH_K /
+  TAU_BY_TYPE / ALLOW_DEGRADED_PREDICTORS, all read from env with backward-
+  compatible defaults (REWARD_MODE="headroom" and C_RED=0.0 reproduce the
+  pre-fix reward exactly).
+* src/main.py: `--smoke` -- a short, socket-free, seeded run (~20 episodes,
+  ~300 requests, no plots) that feeds chunks straight to
+  Controller.send_to_server, for fast verification. Also forces UTF-8 on
+  stdout/stderr so the emoji print()s do not crash on a Windows console (D-36).
+* src/_seeding.py: seed_everything() -> random / numpy / tensorflow.
+* src/rewards.py: tau_reward_5case() -- SafeTail 1.0's tau-referenced 5-case
+  tail-latency reward, selectable via REWARD_MODE in {headroom, tau,
+  headroom+tau}. This is the only place tail latency enters the 2.0 reward
+  (M-03); "headroom" (default) is unchanged.
+* src/policy_registry.py, src/_safetail_log.py: stdlib-only support modules
+  (a subset<->action-index helper used by the reward/mode changes, and a
+  tagged-logging + degradation-ledger helper). Inert unless used.
+
+VERIFY
+
+    python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
+    SAFETAIL_SMOKE=1 SAFETAIL_SEED=0 python src/main.py --smoke
+
+Full gate scripts, regression tests, the baseline seam and the audit write-up
+live in a separate working tree and are out of scope for this PR.
+
