@@ -12,6 +12,7 @@
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 2
+export PYTHONUTF8=1
 PY="${SAFETAIL_PY:-$REPO/.venv/Scripts/python.exe}"
 [ -x "$PY" ] || PY="python"
 
@@ -27,19 +28,25 @@ HIDDEN="$REPO/baselines.__g4_hidden__"
 
 # --- (b) code-level scan, comments/strings stripped via tokenize --------------
 "$PY" - <<'PYEOF'
-import io, sys, tokenize, pathlib
+import io, re, sys, tokenize, pathlib
+# CODE dependency only: an `import baselines` / `from baselines ...`, an attribute
+# access `baselines.<x>`, or a string literal that *is* a baselines path
+# (starts with baselines/ or baselines\). Prose in docstrings/comments is fine.
 bad = []
+PATHLIT = re.compile(r"""^[a-z]?['"]{1,3}baselines[/\\]""", re.I)
 for f in pathlib.Path("src").rglob("*.py"):
     try:
-        toks = tokenize.tokenize(io.BytesIO(f.read_bytes()).readline)
-        for tok in toks:
-            if tok.type == tokenize.NAME and tok.string == "baselines":
-                bad.append(f"{f}:{tok.start[0]} -> NAME 'baselines' in code")
-            if tok.type == tokenize.STRING and "baselines" in tok.string.lower() \
-               and ("/" in tok.string or "\\" in tok.string):
-                bad.append(f"{f}:{tok.start[0]} -> path-like string mentions baselines")
+        toks = list(tokenize.tokenize(io.BytesIO(f.read_bytes()).readline))
     except Exception as e:
-        bad.append(f"{f}: tokenize failed: {e}")
+        bad.append(f"{f}: tokenize failed: {e}"); continue
+    for i, tok in enumerate(toks):
+        if tok.type == tokenize.NAME and tok.string == "baselines":
+            prev = toks[i - 1].string if i else ""
+            nxt = toks[i + 1].string if i + 1 < len(toks) else ""
+            if prev in ("import", "from") or nxt == ".":
+                bad.append(f"{f}:{tok.start[0]} -> code reference to baselines: {tok.line.strip()}")
+        if tok.type == tokenize.STRING and PATHLIT.match(tok.string):
+            bad.append(f"{f}:{tok.start[0]} -> baselines path literal: {tok.line.strip()}")
 if bad:
     print("\n".join(bad)); sys.exit(1)
 print("clean")

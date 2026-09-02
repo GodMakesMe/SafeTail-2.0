@@ -9,6 +9,9 @@ from tensorflow.keras.models import load_model
 import constants
 import servers
 from agent import DQNAgent
+from policy_registry import PolicyContext, subset_to_index  # [SAFETAIL][SEAM] stdlib-only, always present
+
+MAX_CONCURRENT_REQUESTS = servers.MAX_CONCURRENT_REQUESTS
 
 
 class Controller:
@@ -97,6 +100,17 @@ class Controller:
         #          | "rand_1" | "rand_2" | "rand_3"
         self.BASELINE_MODE = constants.BASELINE_MODE
         # ─────────────────────────────────────────────────────────────────────
+
+        # [SAFETAIL][SEAM][M-02] Optional external policy (plan.md 8.3).
+        # With baselines/ absent, constants.POLICY stays "native" and this is None;
+        # the DQN / heuristic paths below are unconditional and survive deletion.
+        self.policy = None
+        self._pending_policy_ctx = None
+        _pol = getattr(constants, "POLICY", "native")
+        if _pol not in (None, "", "native"):
+            from policy_registry import get  # stdlib-only module, always importable
+            self.policy = get(_pol)()         # KeyError here is a loud, correct failure
+            print(f"[SAFETAIL][SEAM] external policy active: {_pol} -> {type(self.policy).__name__}")
         base_log_dir = Path(constants.training_log_folder)
         base_log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -228,6 +242,80 @@ class Controller:
         now = time.time()
         load = [s.check_server_availability(now) for s in self.server_list]
         return np.array(load)
+
+    def _build_policy_context(self, request, load, other_latencies):
+        """
+        [SAFETAIL][SEAM] Assemble the frozen, pre-action PolicyContext (plan.md 8.4).
+
+        `load[i]` is check_server_availability(): current active-request count when
+        the server has room, else -1 (full). free_slots is derived from it.
+        Per-server estimates come from the SINGLE phase-2 draw already stored on
+        `request.total_processing_delay` / `other_latencies` (guards against the
+        D-18 double-draw for policies that use the seam).
+        """
+        beta = self.num_servers
+        load = list(load)
+        free_slots = [(-1 if l == -1 else int(MAX_CONCURRENT_REQUESTS - l)) for l in load]
+
+        est_delay = []
+        est_components = []
+        tpd = getattr(request, "total_processing_delay", None)
+        for i in range(beta):
+            comp = prop = trans = 0.0
+            if i < len(other_latencies) and other_latencies[i]:
+                comp = float(other_latencies[i].get("computation", 0.0))
+                prop = float(other_latencies[i].get("propagation", 0.0))
+                trans = float(other_latencies[i].get("transmission", 0.0))
+            est_components.append((comp, prop, trans))
+            if tpd is not None and i < len(tpd):
+                est_delay.append(float(tpd[i]))
+            else:
+                est_delay.append(comp + prop + trans)
+
+        static, dynamic = [], []
+        for i, srv in enumerate(self.server_list):
+            d = request.server_dicts[i] if i < len(request.server_dicts) else {}
+            static.append({
+                "total_ram": d.get("total_ram", 0.0),
+                "total_cpu_cores": d.get("total_cpu_cores", 0),
+                "total_gpu_memory": d.get("total_gpu_memory", 0.0),
+                "has_gpu": bool(d.get("total_gpu_memory", 0.0)),
+            })
+            dynamic.append({
+                "active_requests": int(getattr(srv, "num_requests", 0)),
+                "ram_usage": d.get("ram_usage", 0.0),
+                "gpu_usage": d.get("gpu_usage", 0),
+            })
+
+        rtype = "?"
+        try:
+            rtype = str(request.combination)[0]
+        except Exception:
+            pass
+        try:
+            if str(request.combination)[0] == "s":
+                deadline = tuple(self.deadlines[0])
+            else:
+                deadline = tuple(self.deadlines[1])
+        except Exception:
+            deadline = (float("nan"), float("nan"))
+
+        return PolicyContext(
+            request_id=int(getattr(request, "request_id", -1)),
+            request_type=rtype,
+            deadline=(float(deadline[0]), float(deadline[1])),
+            message_size=float(getattr(request, "message_size", 0.0)),
+            bandwidth=float(getattr(request, "bandwidth", 0.0)),
+            beta=beta,
+            free_slots=free_slots,
+            est_delay=est_delay,
+            est_components=est_components,
+            server_static=static,
+            server_dynamic=dynamic,
+            arrival_time=float(getattr(request, "arrival_time", 0.0)),
+            episode_index=int(self.current_episode),
+            step_index=int(self.current_step),
+        )
 
     # ── Baseline server selection helpers ────────────────────────────────────
 
@@ -605,7 +693,29 @@ class Controller:
 
         # ── Server selection: driven automatically by self.BASELINE_MODE ────────
         try:
-            if self.BASELINE_MODE == "safetail":
+            if self.policy is not None:
+                # [SAFETAIL][SEAM][M-02] External policy path. Native branches below
+                # are untouched and remain the only path when baselines/ is absent.
+                ctx = self._build_policy_context(request, load, other_latencies)
+                self._pending_policy_ctx = ctx
+                subset = [int(i) for i in self.policy.select(ctx)]
+                if not subset or not all(0 <= i < self.num_servers for i in subset):
+                    raise ValueError(
+                        f"[SAFETAIL][SEAM][INVARIANT] policy {self.policy.name!r} returned "
+                        f"invalid subset {subset} for beta={self.num_servers}"
+                    )
+                action_subset = subset
+                action_index = subset_to_index(subset, self.num_servers)
+                try:
+                    self.log_request_access_rate_with_type(
+                        request_id=request.request_id,
+                        request_type=str(request.combination),
+                        access_rate=len(action_subset) / self.num_servers,
+                    )
+                except Exception as e:
+                    print(f"[CONTROLLER] Access rate logging failed: {e}")
+
+            elif self.BASELINE_MODE == "safetail":
                 original_request_type = request.combination
                 action_subset, action_index = self.agent.get_action(request)
                 # -------- ACCESS RATE PER REQUEST --------
@@ -717,7 +827,19 @@ class Controller:
                 f.write(f"{self.current_episode},{self.current_step},{combined_step_reward:.6f}\n")
         except Exception as e:
             print(f"[CONTROLLER] Failed to log step reward: {e}")
-        if self.BASELINE_MODE == "safetail":
+        if self.policy is not None:
+            # [SAFETAIL][SEAM][M-02] Feed the realised reward back; keep episodic
+            # bookkeeping alive so latency/episode logs still populate.
+            try:
+                self.policy.observe(self._pending_policy_ctx, action_subset, float(combined_step_reward))
+            except Exception as e:
+                print(f"[CONTROLLER, !] policy.observe failed: {type(e).__name__} - {e}")
+            try:
+                self.step_rewards.append(combined_step_reward)
+            except Exception:
+                pass
+
+        elif self.BASELINE_MODE == "safetail":
             # store experience
             try:
                 if not self.testing_phase_active:
@@ -781,7 +903,14 @@ class Controller:
             f"Reward={episodic_reward:.4f}"
         )
 
-        if self.BASELINE_MODE == "safetail":
+        if self.policy is not None:
+            try:
+                self.policy.finish_episode(int(self.current_episode))
+            except Exception as e:
+                print(f"[CONTROLLER, !] policy.finish_episode failed: {type(e).__name__} - {e}")
+            self.agent.rewards = np.append(self.agent.rewards, episodic_reward)
+
+        elif self.BASELINE_MODE == "safetail":
 
             if self.testing_phase_active:
                 # continue reward plots during testing
@@ -936,6 +1065,8 @@ class Controller:
         Generate all training plots and save metrics summary.
         Called periodically during training.
         """
+        if getattr(constants, "SMOKE", False):
+            return  # [SAFETAIL][PLOT][smoke] plan.md 9.4: smoke runs produce no plots
         episode_str = f"ep{self.current_episode:04d}"
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         save_dir = self.plot_dir / episode_str
@@ -969,6 +1100,8 @@ class Controller:
         Generate final comprehensive plots at the end of training.
         These are higher quality and include all dataset.
         """
+        if getattr(constants, "SMOKE", False):
+            return  # [SAFETAIL][PLOT][smoke] plan.md 9.4
         print("\n" + "=" * 60)
         print("[CONTROLLER] 🎨 Generating final training visualizations...")
         print("=" * 60)

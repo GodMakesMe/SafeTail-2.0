@@ -1,5 +1,36 @@
 import os
 
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() not in ("0", "", "false", "no")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+############################### RUN CONTROL (plan.md 9.4 / B7) ###########
+
+# [SAFETAIL][MAIN][smoke] Short deterministic run for gates G2/G3/G4 and CI.
+# Enabled by `--smoke` (main.py sets SAFETAIL_SMOKE=1) or the env var directly.
+SMOKE = _env_flag("SAFETAIL_SMOKE")
+
+# [SAFETAIL][MAIN][B7] Master seed threaded to random / numpy / tensorflow.
+# `None` (env unset / "none") keeps legacy non-deterministic behaviour.
+_seed_raw = os.environ.get("SAFETAIL_SEED", "").strip().lower()
+SEED = None if _seed_raw in ("", "none") else _env_int("SAFETAIL_SEED", 0)
+
+# [SAFETAIL][SEAM] External-policy selector (plan.md 8.3). "native" => built-in
+# DQN / heuristic path; any other value is resolved via src/policy_registry.get().
+POLICY = os.environ.get("POLICY", "native").strip() or "native"
+
+# Smoke-scale overrides: ~20 episodes, ~300 requests, no plots.
+SMOKE_CHUNKS = _env_int("SAFETAIL_SMOKE_CHUNKS", 60)   # 60 * chunk_size(5) = 300 requests
+SMOKE_EPISODES = _env_int("SAFETAIL_SMOKE_EPISODES", 20)
+
 ############################### HYPERPARAMETERS ##########################
 median_computation_delay = 0.05
 total_no_request = 500000
