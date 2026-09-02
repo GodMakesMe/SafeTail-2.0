@@ -41,6 +41,7 @@ class SafeTailV1Policy(BasePolicy):
         self.n_select = 0
         self.n_explore = 0
         self.n_replay = 0
+        self._step = 0
         self.v1_bug01_out_of_band = 0          # V1-BUG-01 events
         self.losses: list[float] = []
         self.access_rates: list[float] = []
@@ -90,15 +91,22 @@ class SafeTailV1Policy(BasePolicy):
         self._prev = (state, action_idx, r)
         self._pending = None
 
+        # [SAFETAIL][POLICY][V1-DEV-03] replay at 1.0's own cadence -- once per
+        # request (1.0 called experience_replay from inside reward()). Driven
+        # from the step boundary here rather than from inside the reward
+        # function, which is the only structural change (plan.md 8.6).
+        # Replaying once per EPISODE instead gave 1,015 gradient steps and 1,015
+        # epsilon decrements over the run: the policy never left exploration.
+        self._step += 1
+        if (not self.frozen) and self._step % max(1, cfg.REPLAY_EVERY) == 0:
+            loss, _val, self.epsilon = experience_replay(self.model, self.memory, self.epsilon)
+            if loss == loss:  # not NaN
+                self.n_replay += 1
+                self.losses.append(loss)
+
     def finish_episode(self, episode_index: int) -> None:
         if cfg.FREEZE_AFTER_EPISODES and episode_index >= cfg.FREEZE_AFTER_EPISODES and not self.frozen:
             self.freeze()
-        if self.frozen:
-            return
-        loss, _val, self.epsilon = experience_replay(self.model, self.memory, self.epsilon)
-        if loss == loss:  # not NaN
-            self.n_replay += 1
-            self.losses.append(loss)
 
     # -- helpers ---------------------------------------------------------
     def freeze(self) -> None:

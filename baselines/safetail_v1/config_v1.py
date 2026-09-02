@@ -18,7 +18,39 @@ LR = 1e-6
 GAMMA = 0.95
 EPS_START = 1.0
 EPS_MIN = 0.1
-GAMMA_DECAY = 5.5e-6          # instance config; SUBTRACTIVE per replay (ST Eq. 3)
+
+# ---------------------------------------------------------------------------
+# V1-DEV-03: exploration schedule scaled to the RUN BUDGET.
+#
+# SafeTail 1.0's own value is GAMMA_DECAY_NATIVE = 5.5e-6, subtractive per
+# replay (ST Eq. 3). 1.0 called experience_replay from inside reward(), i.e.
+# once per request, over 6000 episodes x 30 steps ~= 180,000 steps -- so
+# 180000 * 5.5e-6 = 0.99 and epsilon decayed fully.
+#
+# Our comparison budget is one pass over the SAME data as the heterogeneous run:
+# 15,225 requests. At the native rate epsilon would fall by 15225*5.5e-6 = 0.084
+# -- it would end at ~0.92 and the "baseline" would be a uniformly random
+# scheduler for the entire run (observed: mean K = 2.58, exactly the uniform
+# mean subset size over the 31 subsets). That measures nothing.
+#
+# So the decay is scaled so epsilon reaches EPS_MIN after EPS_DECAY_FRACTION of
+# the run's replay calls. This is an explicit, recorded adaptation of the same
+# class as tau (plan.md 8.5) -- 1.0's ALGORITHM is preserved; only the schedule
+# constant is rescaled to the data budget it is given. Set
+# SAFETAIL_V1_GAMMA_DECAY to override, or =5.5e-06 to force the native value.
+# ---------------------------------------------------------------------------
+GAMMA_DECAY_NATIVE = 5.5e-6
+TOTAL_STEPS = int(os.environ.get("SAFETAIL_V1_TOTAL_STEPS", "15225"))
+# 0.45 matches the exploration profile of the reference_v0 SafeTail-2.0 run it is
+# compared against: that run used gamma_decay=0.002 subtractive with one replay
+# per episode over 1,015 episodes, so it reached epsilon_min at episode ~459 --
+# 45% of the way through. Equal exploration budget on both sides.
+EPS_DECAY_FRACTION = float(os.environ.get("SAFETAIL_V1_EPS_DECAY_FRAC", "0.45"))
+# 1.0 replayed once per request; keep that cadence (see policy_v1.observe).
+REPLAY_EVERY = int(os.environ.get("SAFETAIL_V1_REPLAY_EVERY", "1"))
+_n_replays = max(1.0, EPS_DECAY_FRACTION * TOTAL_STEPS / max(1, REPLAY_EVERY))
+GAMMA_DECAY = float(os.environ.get("SAFETAIL_V1_GAMMA_DECAY",
+                                   str((EPS_START - EPS_MIN) / _n_replays)))
 BATCH = 128
 REPLAY_MAXLEN = 2500
 EPOCHS = 2
