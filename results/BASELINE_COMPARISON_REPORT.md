@@ -22,17 +22,38 @@ policies truncated to a common **n = 14,723** before percentiles.
 ## 1. Headline
 
 Service latency `total_latency` = computation + propagation + transmission (ms);
-the same column with the same meaning on both sides. SafeTail 1.0 is the median
-of 3 seeds.
+the same column with the same meaning on both sides. SafeTail 1.0 rows are the
+median of 3 seeds. **Which SafeTail 1.0 matters — see §3.3.**
 
-| policy | p50 | p90 | p95 | p99 | mean | mean K |
+| policy | mean K | p50 | p90 | **p95** | p99 | mean |
 |---|---|---|---|---|---|---|
-| **SafeTail 2.0** (heterogeneous) | **39.88** | **59.88** | **75.66** | **115.64** | **44.44** | **3.55** |
-| **SafeTail 1.0** (baseline) | 41.67 | 69.48 | 89.72 | 122.59 | 45.37 | **2.55** |
-| *2.0 better by* | 4.3% | 13.8% | **15.7%** | 5.7% | 2.0% | *(uses 39% more compute)* |
+| SafeTail 2.0 (heterogeneous, shipped) | 3.55 | 39.88 | 59.88 | **75.66** | 115.64 | 44.44 |
+| SafeTail 1.0 — **code**-faithful | 2.55 | 41.67 | 69.48 | **89.72** | 122.59 | 45.37 |
+| **SafeTail 1.0 — PAPER-faithful** | **1.51** | **31.77** | **52.53** | **68.66** | **114.98** | **39.48** |
 
-**SafeTail 2.0 beats SafeTail 1.0 at every percentile**, with the largest margin
-at p90–p95 — the tail the paper's claim is about.
+### ⚠️ The answer depends entirely on which SafeTail 1.0 you benchmark
+
+* Against the **GitHub implementation**, SafeTail 2.0 wins at every percentile
+  (p95 75.66 vs 89.72, **−15.7%**).
+* Against the **published paper's algorithm** (Eq. 5 + Eq. 6), **SafeTail 2.0
+  loses at every percentile** — and loses while spending **2.35× the compute**:
+
+| | 2.0 (shipped) | 1.0 (paper) | 1.0 better by |
+|---|---|---|---|
+| mean K | 3.55 | **1.51** | **57% less compute** |
+| p50 | 39.88 | 31.77 | 20.3% |
+| p90 | 59.88 | 52.53 | 12.3% |
+| **p95** | 75.66 | **68.66** | **9.3%** |
+| p99 | 115.64 | 114.98 | 0.6% |
+
+**The correct referent for a comparison against a paper is the paper.** On that
+basis the honest headline is: *the heterogeneous SafeTail 2.0 does not beat
+SafeTail 1.0 as published — it is beaten by it, at less than half the
+replication budget.*
+
+The earlier "2.0 beats 1.0 by 15.7% at p95" result was an artefact of
+benchmarking against an implementation that does not implement its own paper
+(**S-18/S-19/S-20**). It is retained above only to document the difference.
 
 ### ⚠️ But the comparison is not compute-matched
 
@@ -332,3 +353,65 @@ Figures: `F1` tail bars · `F2` CCDF · `F5` convergence · `F6` per-request-typ
 `F7` decomposition. Each ships a companion `.csv` of the exact numbers plotted.
 Limitations and provenance: `RUN_PROVENANCE.md`. Every deviation from SafeTail
 1.0: `FAITHFULNESS_REGISTER.md`.
+
+---
+
+## 3.3 S-18 verdict — the paper-faithful SafeTail 1.0
+
+`baselines/safetail_v1/paper_v1.py` implements the camera-ready algorithm: Eq. 5
+(reward), Eq. 6 (probability-distribution target), and the 5×ReLU FNN. 3 seeds,
+identical budget and physics to every other run.
+
+**Result: the reviewer's prediction was correct, and the effect is large.**
+
+| p95 by decile | d1 | d3 | d4 | d5 | d7 | d8 | d9 | d10 |
+|---|---|---|---|---|---|---|---|---|
+| 1.0 — code-faithful | 103.2 | 102.8 | 87.6 | 84.2 | **80.3** | 84.4 | 87.9 | 84.9 ↗ |
+| **1.0 — paper-faithful** | 103.8 | 91.4 | 73.4 | 53.7 | 52.0 | 51.6 | 52.6 | **51.9** → |
+| 2.0 — updated | 104.2 | 92.3 | 73.8 | 53.6 | 52.7 | 52.2 | 53.1 | 61.8 |
+
+Three things follow.
+
+1. **The degradation was the bug, not the algorithm.** The code-faithful port
+   peaks at decile 7 and then worsens on every seed. The paper-faithful one
+   converges by decile 5 and holds flat to the end. That is direct confirmation
+   of **S-18**: feeding Bellman targets to a softmax + cross-entropy head is what
+   destabilised it. The paper never does that.
+2. **§3's architectural claim is fully withdrawn.** "SafeTail 1.0's head cannot
+   do Q-learning, therefore 2.0's linear head is the essential fix" is false of
+   the paper. The paper does not do Q-learning at all — it does distributional
+   policy improvement, for which softmax + CCE is the *correct* pairing.
+3. **The paper-faithful 1.0 is remarkably compute-efficient.** Mean K = **1.51**
+   versus 2.0's 3.55. Eq. 5 penalises early finishes in proportion to redundancy
+   used, and unlike the code's version that penalty *decays* rather than growing
+   — so the policy is pushed toward the smallest subset that still meets τ. This
+   is exactly the redundancy pricing SafeTail 2.0 lacks (**D-07**, **M-04**).
+
+### Against the heuristics
+
+| policy | K | p95 | p99 |
+|---|---|---|---|
+| Oracle | 5.00 | 49.53 | 52.45 |
+| MinProp-2 | 2.00 | 49.08 | 53.37 |
+| SafeTail 2.0 (updated, converged) | 3.00 | 50.28 | 55.47 |
+| **SafeTail 1.0 (paper)** | **1.51** | 68.66 | 114.98 |
+| SafeTail 2.0 (shipped) | 3.55 | 75.66 | 115.64 |
+
+MinProp still wins outright. But the paper-faithful 1.0 achieves its result at
+**K = 1.51**, the lowest replication budget of any learned policy here — so on a
+latency-per-server basis it is the most efficient of the three learned
+schedulers, and it was never given credit for that because the baseline was
+built from code that does not implement it.
+
+### What this changes for the write-up
+
+* Do **not** claim SafeTail 2.0 beats SafeTail 1.0. On the published algorithm
+  it does not.
+* The defensible claims are now: (a) the repaired 2.0 reaches oracle-competitive
+  tail latency at matched K (§3.2); (b) SafeTail 1.0's published implementation
+  diverges from its paper in three material ways, and benchmarking against the
+  code understates it substantially (S-18/19/20); (c) neither learned policy
+  beats MinProp in this environment, and D-02 explains why (§2).
+* The K = 1.51 result deserves its own investigation. If a policy reaches
+  p95 68.7 ms with 1.5 servers, redundancy budget — not tail latency — may be
+  the more interesting axis for the next paper.

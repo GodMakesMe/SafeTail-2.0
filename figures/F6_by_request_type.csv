@@ -9,7 +9,8 @@ MinProp-3,Speech,4798,51.7547192
 Rand-1,Speech,4878,150.178351
 Rand-2,Speech,4891,112.534888
 Rand-3,Speech,4859,79.01288919999978
-SafeTail-1.0,Speech,14717,95.08405419999966
+SafeTail-1.0 (code),Speech,14717,95.08405419999966
+SafeTail-1.0 (paper),Speech,14702,80.95204394999996
 Oracle,Speech,14771,51.428351
 SafeTail-2.0 (rerun),Speech,14641,137.70369
 SafeTail-1.0 (slowpath s0),Speech,4900,89.45585100000011
@@ -23,7 +24,8 @@ MinProp-3,Detect,4912,33.5626059
 Rand-1,Detect,4870,133.85342095000001
 Rand-2,Detect,4893,95.85539299999998
 Rand-3,Detect,4910,66.17772645000002
-SafeTail-1.0,Detect,14812,90.55882599999995
+SafeTail-1.0 (code),Detect,14812,90.55882599999995
+SafeTail-1.0 (paper),Detect,14627,61.3609444999999
 Oracle,Detect,14702,32.836326
 SafeTail-2.0 (rerun),Detect,14720,122.16364064999999
 SafeTail-1.0 (slowpath s0),Detect,4869,84.63632599999973
@@ -37,7 +39,8 @@ MinProp-3,Predict,5013,33.529849
 Rand-1,Predict,4975,131.75430780000002
 Rand-2,Predict,4939,95.79379229999998
 Rand-3,Predict,4954,66.26484899999994
-SafeTail-1.0,Predict,14640,91.37418249999996
+SafeTail-1.0 (code),Predict,14640,91.37418249999996
+SafeTail-1.0 (paper),Predict,14840,61.27418249999996
 Oracle,Predict,14696,34.57002
 SafeTail-2.0 (rerun),Predict,14808,125.17177
 SafeTail-1.0 (slowpath s0),Predict,4954,84.37002
