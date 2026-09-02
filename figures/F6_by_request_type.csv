@@ -1,5 +1,5 @@
 policy,type,n,p95
-SafeTail-2.0 (het),Speech,4958,85.80153289999994
+SafeTail-2.0 (shipped),Speech,4958,85.80153289999994
 MinLoad-1,Speech,4967,149.113351
 MinLoad-2,Speech,4941,111.40369
 MinLoad-3,Speech,4877,59.624956399999995
@@ -9,8 +9,11 @@ MinProp-3,Speech,4798,51.7547192
 Rand-1,Speech,4878,150.178351
 Rand-2,Speech,4891,112.534888
 Rand-3,Speech,4859,79.01288919999978
-Oracle,Speech,4854,49.00369
-SafeTail-2.0 (het),Detect,4902,66.92822594999998
+SafeTail-1.0,Speech,14717,95.08405419999966
+Oracle,Speech,14771,51.428351
+SafeTail-2.0 (rerun),Speech,14641,137.70369
+SafeTail-1.0 (slowpath s0),Speech,4900,89.45585100000011
+SafeTail-2.0 (shipped),Detect,4902,66.92822594999998
 MinLoad-1,Detect,4833,128.07539299999996
 MinLoad-2,Detect,4921,91.885393
 MinLoad-3,Detect,4908,42.48670369999999
@@ -20,8 +23,11 @@ MinProp-3,Detect,4912,33.5626059
 Rand-1,Detect,4870,133.85342095000001
 Rand-2,Detect,4893,95.85539299999998
 Rand-3,Detect,4910,66.17772645000002
-Oracle,Detect,4934,32.914527
-SafeTail-2.0 (het),Predict,4863,67.5720319999998
+SafeTail-1.0,Detect,14812,90.55882599999995
+Oracle,Detect,14702,32.836326
+SafeTail-2.0 (rerun),Detect,14720,122.16364064999999
+SafeTail-1.0 (slowpath s0),Detect,4869,84.63632599999973
+SafeTail-2.0 (shipped),Predict,4863,67.5720319999998
 MinLoad-1,Predict,4923,127.46984899999997
 MinLoad-2,Predict,4861,93.029849
 MinLoad-3,Predict,4938,43.64728599999998
@@ -31,4 +37,7 @@ MinProp-3,Predict,5013,33.529849
 Rand-1,Predict,4975,131.75430780000002
 Rand-2,Predict,4939,95.79379229999998
 Rand-3,Predict,4954,66.26484899999994
-Oracle,Predict,4935,34.62177
+SafeTail-1.0,Predict,14640,91.37418249999996
+Oracle,Predict,14696,34.57002
+SafeTail-2.0 (rerun),Predict,14808,125.17177
+SafeTail-1.0 (slowpath s0),Predict,4954,84.37002

@@ -101,17 +101,34 @@ def check_table() -> None:
     if not t.is_file():
         raise Fail("figures/table_main.csv missing")
     df = pd.read_csv(t)
-    need = {"policy", "p50", "p90", "p95", "p99"}
+    # the aggregate table uses p<NN>_med (median across seeds); a single-run
+    # table uses bare p<NN>. Accept either.
+    suffix = "_med" if "p50_med" in df.columns else ""
+    cols = [f"p{p}{suffix}" for p in (50, 90, 95, 99)]
+    need = {"policy", *cols}
     if not need <= set(df.columns):
         raise Fail(f"table_main.csv missing columns {need - set(df.columns)}")
     bad = []
     for _, r in df.iterrows():
-        if not (r.p50 <= r.p90 <= r.p95 <= r.p99):
-            bad.append(f"{r.policy}: {r.p50:.2f}/{r.p90:.2f}/{r.p95:.2f}/{r.p99:.2f}")
+        vals = [r[c] for c in cols]
+        if not all(a <= b for a, b in zip(vals, vals[1:])):
+            bad.append(f"{r.policy}: " + "/".join(f"{v:.2f}" for v in vals))
     if bad:
         raise Fail("non-monotonic percentiles: " + "; ".join(bad))
     if df["n"].nunique() != 1:
         raise Fail(f"policies compared at different n: {df[['policy','n']].to_dict('records')}")
+
+    # per-seed table, when present, must show >1 seed for at least one policy
+    ps = FIGS / "table_per_seed.csv"
+    if ps.is_file():
+        d2 = pd.read_csv(ps)
+        multi = d2.groupby("policy")["seed"].nunique()
+        if (multi > 1).sum() == 0:
+            print("[SAFETAIL][AUDIT][G6][warn] every policy has a single seed -- "
+                  "plan.md B7 wants >=3 before publishing")
+        else:
+            _ok(f"per-seed table: {int((multi > 1).sum())} policies with >1 seed "
+                f"(max {int(multi.max())})")
     _ok(f"table_main.csv: {len(df)} policies, percentiles monotonic, common n={int(df.n.iloc[0])}")
 
 

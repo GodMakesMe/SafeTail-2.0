@@ -1,5 +1,5 @@
 policy,component,mean_ms
-SafeTail-2.0 (het),computation,8.671377029138084
+SafeTail-2.0 (shipped),computation,8.671377029138084
 MinLoad-1,computation,9.848778781498337
 MinLoad-2,computation,8.907016844393127
 MinLoad-3,computation,8.446653671126809
@@ -9,8 +9,11 @@ MinProp-3,computation,8.285462201996875
 Rand-1,computation,9.182895333831421
 Rand-2,computation,8.875749303810366
 Rand-3,computation,8.642428105684981
-Oracle,computation,8.396279630510085
-SafeTail-2.0 (het),propagation,15.568990694831216
+SafeTail-1.0,computation,9.377219022391268
+Oracle,computation,8.925848445742488
+SafeTail-2.0 (rerun),computation,8.92951194276529
+SafeTail-1.0 (slowpath s0),computation,9.826912110303606
+SafeTail-2.0 (shipped),propagation,15.568990694831216
 MinLoad-1,propagation,35.663855871765264
 MinLoad-2,propagation,17.94863139305848
 MinLoad-3,propagation,8.480170481559467
@@ -20,8 +23,11 @@ MinProp-3,propagation,6.328441893635808
 Rand-1,propagation,43.71885485295116
 Rand-2,propagation,21.435094749711332
 Rand-3,propagation,12.038005161991443
-Oracle,propagation,5.799606058547849
-SafeTail-2.0 (het),transmission,20.19679413163078
+SafeTail-1.0,propagation,15.978548303108512
+Oracle,propagation,5.865001471620367
+SafeTail-2.0 (rerun),propagation,24.494440671058886
+SafeTail-1.0 (slowpath s0),propagation,14.339299055898932
+SafeTail-2.0 (shipped),transmission,20.19679413163078
 MinLoad-1,transmission,20.251864429803703
 MinLoad-2,transmission,20.22507641105753
 MinLoad-3,transmission,20.16002173470081
@@ -31,8 +37,11 @@ MinProp-3,transmission,20.152638728520003
 Rand-1,transmission,20.25858181077226
 Rand-2,transmission,20.208211641649118
 Rand-3,transmission,20.195639475650342
-Oracle,transmission,20.115798410650005
-SafeTail-2.0 (het),queueing,67.73294142729063
+SafeTail-1.0,transmission,20.199651339174533
+Oracle,transmission,20.110871878466796
+SafeTail-2.0 (rerun),transmission,20.18930924403994
+SafeTail-1.0 (slowpath s0),transmission,20.196733002784757
+SafeTail-2.0 (shipped),queueing,67.73294142729063
 MinLoad-1,queueing,40.50581071113224
 MinLoad-2,queueing,44.61215957583373
 MinLoad-3,queueing,47.34642727215921
@@ -42,4 +51,7 @@ MinProp-3,queueing,47.609167307206405
 Rand-1,queueing,40.842667822250895
 Rand-2,queueing,43.992330757318484
 Rand-3,queueing,50.504065122461455
-Oracle,queueing,48.62510284086124
+SafeTail-1.0,queueing,103.22894270153273
+Oracle,queueing,93.24775958722181
+SafeTail-2.0 (rerun),queueing,91.36220353406236
+SafeTail-1.0 (slowpath s0),queueing,673.623990519731
