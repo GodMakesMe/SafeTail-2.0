@@ -139,12 +139,22 @@ def main() -> int:
     for p in sorted(FIGURES.glob("F*")):
         shutil.copy2(p, fdir / p.name)
 
-    for doc in (RESULTS / "RUN_PROVENANCE.md",
-                REPO / "baselines" / "safetail_v1" / "README.md"):
-        if doc.is_file():
-            shutil.copy2(doc, stage / (
-                "RUN_PROVENANCE.md" if doc.name == "RUN_PROVENANCE.md"
-                else "FAITHFULNESS_REGISTER.md"))
+    for src_doc, dst_name in (
+            (RESULTS / "BASELINE_COMPARISON_REPORT.md", "REPORT.md"),
+            (RESULTS / "RUN_PROVENANCE.md", "RUN_PROVENANCE.md"),
+            (REPO / "baselines" / "safetail_v1" / "README.md", "FAITHFULNESS_REGISTER.md")):
+        if src_doc.is_file():
+            shutil.copy2(src_doc, stage / dst_name)
+
+    # the heterogeneous side we compared against, for a self-contained package
+    het = RESULTS / "reference_v0" / "safetail_training_logs"
+    if het.is_dir():
+        hdst = stage / "runs" / "heterogeneous_reference"
+        info = copy_run(het, hdst)
+        info["note"] = ("byte-identical (md5, all 5 CSVs) to "
+                        "SafeTail-2.0-main/results/safetail_training_logs -- the "
+                        "published heterogeneous run this baseline is compared against")
+        manifest["runs"]["heterogeneous_reference"] = info
 
     (stage / "MANIFEST.json").write_text(json.dumps(manifest, indent=2, default=str),
                                          encoding="utf-8")

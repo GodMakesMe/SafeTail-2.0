@@ -252,6 +252,39 @@ def fig_decomposition(runs, out: Path, name="F7_latency_decomposition"):
     _save(fig, out, name, pd.DataFrame(rows))
 
 
+def fig_convergence(runs, out: Path, metric: str, name="F5_convergence", bins=10):
+    """
+    p95 within each decile of the run -- does the policy converge, plateau, or
+    degrade as training proceeds? This is the evidence for whether a policy is
+    under-trained or unstable, and it cannot be read off end-of-run percentiles.
+    """
+    fig, ax = plt.subplots(figsize=(9, 5.2)); rows = []
+    keep = [l for l in runs if l.startswith(("SafeTail", "Oracle"))]
+    for lab in keep:
+        seeds = runs[lab]
+        per_seed = []
+        for s, d in sorted(seeds.items()):
+            v = d[metric].to_numpy(float); n = len(v)
+            seg = [float(np.percentile(v[int(i * n / bins):int((i + 1) * n / bins)], 95))
+                   for i in range(bins)]
+            per_seed.append(seg)
+            rows += [{"policy": lab, "seed": s, "decile": i + 1, "p95": x}
+                     for i, x in enumerate(seg)]
+        med = np.median(np.array(per_seed), axis=0)
+        x = np.arange(1, bins + 1)
+        ax.plot(x, med, marker="o", ms=4, lw=1.8, label=lab, color=STYLE.get(lab))
+        if len(per_seed) > 1:
+            arr = np.array(per_seed)
+            ax.fill_between(x, arr.min(axis=0), arr.max(axis=0),
+                            color=STYLE.get(lab), alpha=.15, lw=0)
+    ax.set_xlabel("decile of the run (training proceeds ->)")
+    ax.set_ylabel(f"p95 {metric.replace('_',' ')} (ms)")
+    ax.set_title("Convergence: p95 within each decile\n"
+                 "(line = median across seeds, band = min/max)")
+    ax.grid(alpha=.3); ax.legend(fontsize=8)
+    _save(fig, out, name, pd.DataFrame(rows))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="SafeTail comparison figures")
     ap.add_argument("--out", default=str(REPO / "figures"))
@@ -273,6 +306,7 @@ def main() -> int:
 
     fig_tail_bars(agg, out, args.metric)
     fig_ccdf(runs, out, args.metric)
+    fig_convergence(runs, out, args.metric)
     fig_by_type(runs, out, args.metric)
     fig_decomposition(runs, out)
 
