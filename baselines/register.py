@@ -38,6 +38,17 @@ def register_all() -> None:
     if v1_factory is not None:
         policy_registry.register("safetail_v1", v1_factory)
 
+    # --- S-18: SafeTail 1.0 as PUBLISHED IN THE PAPER (Eq. 5 + Eq. 6) --------
+    # The GitHub code and the paper are different algorithms. Both are offered:
+    #   safetail_v1        -> faithful to _spec_source/v1_agent.py (the code)
+    #   safetail_v1_paper  -> faithful to the camera-ready paper
+    try:
+        from safetail_v1.paper_v1 import factory as v1p_factory
+    except Exception:  # noqa: BLE001
+        v1p_factory = None
+    if v1p_factory is not None:
+        policy_registry.register("safetail_v1_paper", v1p_factory)
+
     _REGISTERED = True
 
 

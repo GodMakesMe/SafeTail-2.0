@@ -308,3 +308,64 @@ All rows verified 2 Sep 2026 against `audit/Heterogeneous_Edge_Devices____Tail_L
 | S-15 | BTP-NEW | B12 write-up / D-32 / D-08 | — |
 | S-16 | BTP-NEW | B9 / decision 13.1(9) | — |
 | S-17 | BTP-NEW | runs + §13.2 | G5 / G6 |
+
+---
+
+## S-18 — SafeTail 1.0's published CODE does not implement its published PAPER: target construction · `CODE-BUG`
+
+* **Paper** (camera-ready §IV, and Eq. 6): the reward is *translated into a
+  target vector* `V_t` that is a **probability distribution** — "we ensure that
+  the sum of all elements in the target vector equals 1". `R = 0` ⇒ one-hot on
+  `A_k`; `R < 0` ⇒ initialise every element to `1/(2ⁿ−1)`, set
+  `V_t(j) = max(0, 1/(2ⁿ−1) + R)` for `A_k` and every `A_j` with `E_j ⊆ E_k`,
+  then distribute the remaining mass equally over the rest.
+  **No bootstrapping, no `max` over the next state, no γ, no Bellman equation.**
+  That is coherent with the paper's softmax output + categorical cross-entropy.
+* **Code** (`_spec_source/v1_agent.py`, i.e. `github.com/Jyotishokhanda/SafeTail`):
+  `targets[arange, actions] = rewards + γ·amax(next_q, axis=1)` followed by
+  `categorical_crossentropy`. Bellman Q-targets fed to a distribution loss.
+  The targets are negative reals that do not sum to 1; softmax cannot represent
+  them. This is incoherent and is why the code-faithful port destabilises with
+  further training.
+* **Correction.** The published SafeTail 1.0 **is not** architecturally broken.
+  Its *GitHub implementation* is. Any claim of the form "1.0's softmax+CCE head
+  cannot do Q-learning, therefore 2.0's linear head is the essential fix" is a
+  statement about the repository, **not** about the paper, and must not be
+  attributed to the paper. `baselines/safetail_v1/paper_v1.py` implements the
+  paper; `policy_v1.py` remains the code-faithful port. **Report both.**
+
+## S-19 — …and the reward function differs too (Eq. 5) · `CODE-BUG`
+
+| case | paper Eq. 5 | `v1_agent.py` |
+|---|---|---|
+| `L_R > τ`, `\|E_k\| < n` | `−δ·e^(n−\|E_k\|)` — depends **only** on remaining redundancy headroom | `−α·e^(n−\|E_k\|)·e^(L_R−τ)` — an extra lateness factor the paper does not have |
+| `L_R < τ`, `\|E_k\| > 1` | `−δ·e^(L_R−τ)` — **decays** as the finish gets earlier | `−α·e^(\|E_k\|−1)·e^(τ−L_R)` — exponent **sign flipped** so it *grows*, plus a redundancy factor |
+| `L_R < τ`, `\|E_k\| = 1` | `0` | **case absent**; returns `−δ` |
+
+The paper's Property 4.4 (missing the target latency is penalised more heavily
+than meeting it wastefully) holds for Eq. 5 but not for the code's version.
+
+## S-20 — …and the network architecture differs · `CODE-BUG`
+
+* **Paper §IV:** "The FNN comprises **5 hidden layers with ReLU activations** and
+  a Softmax output layer. It is optimized using Adam with categorical
+  cross-entropy as the loss function."
+* **Code:** `Dense(2·nS, sigmoid) → BatchNorm → Dense(4·nS, sigmoid) →
+  BatchNorm → Dense(nA, softmax)` — **2** hidden layers, **sigmoid** not ReLU,
+  plus BatchNormalization the paper never mentions.
+
+### Consequence for this project
+
+`plan.md` §14.1 transcribed the 1.0 algorithm **from the code**, and §8.6
+recorded "keep softmax+CCE — faithful even though it is wrong for Q-regression".
+That note was right about the code and wrong about the paper. The baseline
+therefore exists in two variants, and the paper one is the correct referent for
+a *paper* comparison:
+
+| policy name | faithful to | notes |
+|---|---|---|
+| `safetail_v1` | `_spec_source/v1_agent.py` (the GitHub code) | Bellman targets + CCE; destabilises after ~decile 7 |
+| `safetail_v1_paper` | the camera-ready paper, Eq. 5 + Eq. 6 | distribution targets; 5×ReLU FNN |
+
+**Credit:** S-18 was raised by an external reviewer of this work; S-19 and S-20
+were found while verifying it.

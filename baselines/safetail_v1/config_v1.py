@@ -96,3 +96,18 @@ MAX_LOAD = 4  # == servers.MAX_CONCURRENT_REQUESTS
 # argmax-only inference. 0 / unset => train online for the whole run (1.0's own
 # v1_agent.py behaviour).
 FREEZE_AFTER_EPISODES = int(os.environ.get("SAFETAIL_V1_FREEZE_AFTER", "0") or "0")
+
+# ---------------------------------------------------------------------------
+# PAPER-FAITHFUL variant (paper_v1.py) -- SafeTail 1.0 camera-ready section IV.
+# The GitHub code and the paper are NOT the same algorithm; see S-18..S-20.
+# ---------------------------------------------------------------------------
+# "The FNN comprises 5 hidden layers with ReLU activations and a Softmax output
+# layer." Width is not stated in the paper; 64 is a reasonable choice for a
+# 12-dim input and 31 outputs, and is swept-able.
+PAPER_HIDDEN_LAYERS = int(os.environ.get("SAFETAIL_V1P_LAYERS", "5"))
+PAPER_HIDDEN_WIDTH = int(os.environ.get("SAFETAIL_V1P_WIDTH", "64"))
+# Eq. 5's delta: "an externally tunable positive real-valued hyperparameter".
+# Must be small relative to 1/(2^n-1)=1/31 for Eq. 6 to retain resolution --
+# with delta too large, max(0, 1/31 + R) clips to 0 for every negative reward
+# and the target degenerates to "uniform over the non-dominated actions".
+PAPER_DELTA = float(os.environ.get("SAFETAIL_V1P_DELTA", "0.005"))
