@@ -221,3 +221,5 @@ tools/_pip_install.log
 src/replay_dump/
 training_logs_*/
 smoke_logs/
+results/_*.log
+results/_validate/
