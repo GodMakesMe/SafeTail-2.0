@@ -803,6 +803,25 @@ class Controller:
             elif self.BASELINE_MODE == "safetail":
                 original_request_type = request.combination
                 action_subset, action_index = self.agent.get_action(request)
+                # [SAFETAIL][CONTROLLER][FIX][B6][D-09] --match-k: cap SafeTail's
+                # subset to a target mean K so the headline comparison is
+                # replication-budget controlled. Keeps the K servers with the
+                # lowest phase-2 estimate; alternates floor/ceil(MATCH_K) so the
+                # realised mean lands on the fractional target.
+                mk = getattr(constants, "MATCH_K", None)
+                if mk:
+                    self._mk_steps = getattr(self, "_mk_steps", 0) + 1
+                    self._mk_selected = getattr(self, "_mk_selected", 0)
+                    # target keeps the running mean pinned to mk
+                    target = int(round(float(mk) * self._mk_steps - self._mk_selected))
+                    target = max(1, min(target, len(action_subset)))
+                    if len(action_subset) > target:
+                        tpd = getattr(request, "total_processing_delay", None)
+                        order = sorted(action_subset,
+                                       key=lambda i: (tpd[i] if tpd is not None and i < len(tpd) else 0.0))
+                        action_subset = sorted(order[:target])
+                        action_index = subset_to_index(action_subset, self.num_servers)
+                    self._mk_selected += len(action_subset)
                 # -------- ACCESS RATE PER REQUEST --------
                 try:
                     access_rate = len(action_subset) / self.num_servers
@@ -814,26 +833,22 @@ class Controller:
                 except Exception as e:
                     print(f"[CONTROLLER] Access rate logging failed: {e}")
 
-            elif self.BASELINE_MODE == "minload_1":
-                action_subset, action_index = self._select_minload_servers(1), 0
-            elif self.BASELINE_MODE == "minload_2":
-                action_subset, action_index = self._select_minload_servers(2), 0
-            elif self.BASELINE_MODE == "minload_3":
-                action_subset, action_index = self._select_minload_servers(3), 0
-            elif self.BASELINE_MODE == "minprop_1":
-                action_subset, action_index = self._select_minprop_servers(1), 0
-            elif self.BASELINE_MODE == "minprop_2":
-                action_subset, action_index = self._select_minprop_servers(2), 0
-            elif self.BASELINE_MODE == "minprop_3":
-                action_subset, action_index = self._select_minprop_servers(3), 0
-            elif self.BASELINE_MODE == "rand_1":
-                action_subset, action_index = self._select_rand_servers(1), 0
-            elif self.BASELINE_MODE == "rand_2":
-                action_subset, action_index = self._select_rand_servers(2), 0
-            elif self.BASELINE_MODE == "rand_3":
-                action_subset, action_index = self._select_rand_servers(3), 0
             else:
-                raise ValueError(f"Unknown BASELINE_MODE: '{self.BASELINE_MODE}'")
+                # [SAFETAIL][CONTROLLER][FIX][B6][D-09] generic {family}_{K}
+                # dispatch. K now ranges 1..beta (was hardcoded 1..3), so the
+                # baseline comparison can be run budget-matched to SafeTail's
+                # mean K instead of capped below it.
+                fam, _, k_str = self.BASELINE_MODE.partition("_")
+                selectors = {
+                    "minload": self._select_minload_servers,
+                    "minprop": self._select_minprop_servers,
+                    "rand": self._select_rand_servers,
+                }
+                if fam not in selectors or not k_str.isdigit():
+                    raise ValueError(f"Unknown BASELINE_MODE: '{self.BASELINE_MODE}'")
+                k = max(1, min(int(k_str), self.num_servers))
+                action_subset = list(selectors[fam](k))
+                action_index = subset_to_index(action_subset, self.num_servers) if action_subset else 0
         # ─────────────────────────────────────────────────────────────────────
         except Exception as e:
             print(f"[CONTROLLER, !] Agent failed to produce action: {type(e).__name__} - {e}")

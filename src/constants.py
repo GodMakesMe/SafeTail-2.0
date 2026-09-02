@@ -47,6 +47,16 @@ ALLOW_DEGRADED_PREDICTORS = _env_flag("SAFETAIL_ALLOW_DEGRADED_PREDICTORS")
 C_RED = float(os.environ.get("SAFETAIL_C_RED", "0.0"))
 C_RED_SWEEP = [0.0, 0.02, 0.05, 0.10, 0.20, 0.40]
 
+# [SAFETAIL][CONTROLLER][B6][D-09] Budget-controlled evaluation. When set (e.g.
+# 3.0), SafeTail's per-request subset is CAPPED (keeping the lowest-estimate
+# servers) so its running mean |A| never exceeds this target -- the headline
+# comparison then runs at a stated replication budget instead of SafeTail
+# running free over all 31 subsets at mean K ~ 3.55 while the baselines are
+# capped at K in {1,2,3}. The realised mean K is reported alongside (plan 9.3).
+# None => SafeTail unconstrained.
+_mk = os.environ.get("SAFETAIL_MATCH_K", "").strip()
+MATCH_K = float(_mk) if _mk else None
+
 ############################### HYPERPARAMETERS ##########################
 median_computation_delay = 0.05
 total_no_request = 500000
@@ -110,7 +120,10 @@ receiver_port = int(os.environ.get("RECEIVER_PORT", 6001))
 ############################### BASELINE COMPARISON ##########################
 
 BASELINE_MODE = os.environ.get("BASELINE_MODE", "safetail")
-# Options: "safetail"
-# | "minload_1" | "minload_2" | "minload_3"
-# | "minprop_1" | "minprop_2" | "minprop_3"
-# | "rand_1"    | "rand_2"    | "rand_3"
+# Options:
+#   "safetail"                      -- the DQN policy (or an external one via POLICY)
+#   "{minload,minprop,rand}_{K}"    -- fixed-K redundant dispatcher; [SAFETAIL][B6]
+#                                      K now ranges 1..beta (was hardcoded 1..3, D-09).
+#                                      e.g. minload_4, minprop_5, rand_2
+# NOTE the _{K} suffix means the REPLICATION BUDGET, not a seed. Seeds are
+# SAFETAIL_SEED (plan.md B7). Results dirs are {policy}_{k}_{seed}_{gitsha7}.
