@@ -79,12 +79,18 @@ TAU_BY_TYPE = {
 
 ############################### HYPERPARAMETERS ##########################
 median_computation_delay = 0.05
+# [SAFETAIL][DEAD][D-33] total_no_request only SIZES the pre-generated request
+# pool. The run stops after `no_of_burst` bursts -> ~15,225 requests actually
+# processed, not 500,000 (BTP Table 4.2 overstates by ~33x).
 total_no_request = 500000
 chunk_size = 5
 no_of_chunk = int(total_no_request / chunk_size)
+# [SAFETAIL][DEAD][D-30] episode_size is vestigial: the controller's episode
+# length is `chunks_per_episode = 3`, not this. It only feeds `no_of_episodes`
+# below, whose value (25,000) is never reached (~1,000 episodes actually run).
 episode_size = 4
 no_of_burst = 1000
-no_of_episodes = int(no_of_chunk / episode_size)
+no_of_episodes = int(no_of_chunk / episode_size)  # see D-30 note above
 learning_rate = 1e-6
 gamma_decay = 0.002
 epsilon_min = 0.1
@@ -96,12 +102,18 @@ jitter = 0.02
 lr_decay_rate = 0.999
 lr_min = 1e-5
 epochs = 1
+# [SAFETAIL][DEAD][D-30] max_load is unused; servers.py hardcodes
+# MAX_CONCURRENT_REQUESTS = 4.
 max_load = 5
 beta = 5  # Number of edge servers.
 alpha = 0.005  # Reward scaling factor.
 discount_rate = 0.9
 batch_size = 128
-nS = 1 * beta + 1  # Number of state features per step.
+# [SAFETAIL][DEAD][D-30][D-35] nS is dead: the encoder input is shape=(None,1)
+# (variable-length, per S-10 -- hardware heterogeneity, not temporal). The agent
+# stores `states=constants.nS` but never uses it. Kept only so the existing
+# DQNAgent(states=constants.nS) call still resolves.
+nS = 1 * beta + 1
 nA = 2 ** beta - 1  # Number of possible actions (subsets of servers).
 post_epsilon_steps = 8000
 

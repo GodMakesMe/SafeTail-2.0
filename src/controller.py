@@ -356,32 +356,17 @@ class Controller:
     # ─────────────────────────────────────────────────────────────────────────
 
     def get_queue_lengths(self):
-        """Get current queue length for each server."""
+        # [SAFETAIL][DEAD][D-29] orphan -- never called. Also misnamed: there are
+        # no queues (D-24); this returns active-request counts. Kept as a
+        # read-only accessor for tooling.
         return np.array([len(s.active_requests) for s in self.server_list])
 
-    def dispatch_to_agent(self, request):
-        return self.agent.get_action(request)
-
-    def assign_request(self, request, indices):
-
-        print(f"[CONTROLLER, ASSIGN] Assigning Request {request.request_id} to servers: {indices}")
-
-        for i in indices:
-            try:
-                ok, finish, proc = self.server_list[i].schedule_request(request)
-
-                if ok:
-                    print(f"[CONTROLLER, ASSIGN] Req {request.request_id} → Server {i + 1} ({proc:.3f}s)")
-                else:
-                    print(f"[CONTROLLER, BUSY] Server {i + 1} full for Req {request.request_id}")
-
-            except (IndexError, TypeError) as e:
-                print(f"[CONTROLLER, ERROR:1] {e}")
-                break
-            except Exception as e:
-                print(f"[CONTROLLER, ERROR:2] Unexpected error for Req {request.request_id} on server {i}: {e}")
-
-        print("\n---- ---- ---- \n")
+    # [SAFETAIL][FIX][D-28] `assign_request(request, indices)` DELETED here.
+    # It unpacked 3 values from schedule_request's 7-tuple (`ok, finish, proc =
+    # ...`) and would raise on any call. It was unreachable dead code, and a
+    # broken orphan invites someone to "fix" it into the live path. The live
+    # scheduling loop is in process_step(). `dispatch_to_agent` (a one-line
+    # wrapper around agent.get_action) is removed with it -- also unused.
 
     # ------------------------------------------------------------
     # Reward
@@ -1233,6 +1218,8 @@ class Controller:
         print("[CONTROLLER] Testing phase started.")
 
     def generate_testing_plots(self):
+        # [SAFETAIL][DEAD][D-29][M-14] empty stub -- testing-phase results are not
+        # plotted at all. Implement or drop the split's plotting claim (B9/M-14).
         pass
 
     def generate_plots(self):
@@ -1312,9 +1299,7 @@ class Controller:
             print(f"[CONTROLLER] ⚠️ Failed to generate final plots: {type(e).__name__} - {e}")
 
     def export_training_data(self, filepath):
-        """
-        Export all training metrics to CSV for external analysis.
-        """
+        """[SAFETAIL][DEAD][D-29][M-14] orphan; body is entirely commented out."""
         # try:
         #     # Determine the maximum length
         #     max_len = max(
@@ -1361,7 +1346,7 @@ class Controller:
         pass
 
     def save_checkpoint(self):
-        """Save model and metrics."""
+        """[SAFETAIL][DEAD][D-29] orphan -- only referenced from a commented-out call."""
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         save_dir = Path("training_logs")
         save_dir.mkdir(exist_ok=True)

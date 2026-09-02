@@ -373,9 +373,7 @@ class DQNAgent:
         self.rewards = np.append(self.rewards, np.mean(rewards))
 
     def get_min_delay(self, request, servers_to_be_queried):
-        """
-        Query the servers and get the minimum delay among them.
-        """
+        """[SAFETAIL][DEAD][D-29] orphan -- never called; also unpacks compute_request_time wrong."""
         min_delay = float('inf')
         for server in servers_to_be_queried:
             min_delay = min(min_delay, self.server_list[server].compute_request_time(request))

@@ -8,7 +8,18 @@
 
 SafeTail 2.0 is an **intelligent workload scheduling framework for heterogeneous edge computing environments** that uses **Reinforcement Learning (RL)** to dynamically allocate service requests across edge servers.
 
-This repository extends the **SafeTail 1.0 framework** by introducing a **Deep Reinforcement Learning–based controller** that learns optimal scheduling strategies based on system state, workload characteristics, and queue delays.
+> ⚠️ **This copy is under active correction.** It was seeded verbatim from
+> `SafeTail-2.0-main` and is being repaired per **`plan.md`**. Several claims in
+> the sections below were **inherited from the source and are wrong** — see
+> **`audit/ERRATA.md`** (specification defects S-01…S-17) and **`CHANGELOG.md`**
+> (code fixes, D-xx / M-xx). Corrected passages are flagged inline with a
+> `[SAFETAIL][FIX][…]` blockquote. Where this README still disagrees with the
+> code, **the code wins** (`plan.md` R7).
+
+This repository extends the **SafeTail 1.0 framework** with a Deep-RL controller
+that learns scheduling strategies from system state and workload characteristics.
+(The original line here said "…and queue delays" — there is no queue; see the
+Queueing Model section, `D-13`/`D-24`.)
 
 The system is designed for **latency-sensitive applications deployed on heterogeneous edge devices**.
 
@@ -355,20 +366,24 @@ The degree of satisfaction depends on whether a request finishes within **soft a
 
 # Queueing Model
 
-The controller queue is modeled as an **M/M/1 queue**.
-
-This allows estimation of waiting time:
-
-[
-W = \frac{\lambda}{\mu(\mu - \lambda)}
-]
-
-Where:
-
-* λ = arrival rate
-* μ = service rate
-
-This queue model helps estimate scheduling delays under dynamic workloads. 
+> **[SAFETAIL][FIX][D-13][D-24][D-22][S-05] Corrected.** The previous text
+> claimed an **M/M/1 queue** with `W = λ/(μ(μ−λ))`. **No such queue exists in
+> the code.** There is no `λ`, no `μ`, no buffer. What is actually implemented:
+>
+> * **Servers are an `M/M/c/c` Erlang-B *loss* system** (`c = 4`): when a server
+>   is full, `Server.schedule_request` returns `(False, "server full")` — the
+>   request is **rejected, not buffered** (see `src/servers.py`, `D-24`). The
+>   rejection/drop count is now a first-class metric (`Controller.dropped_requests`).
+> * **Arrivals are uniform, not Poisson** — `random.randint(2,4)` chunks per
+>   burst, `random.uniform(0.2,0.8)s` between bursts (`src/sender_bursts.py`,
+>   `D-22`). "Randomness ⇒ Poisson" (HED §II-C-4) is a non-sequitur (`S-06`).
+> * **Waiting time** fed to the reward/`P(T)` is wall-clock Python execution
+>   time from arrival to just after the agent returns (`D-23`) — a simulated
+>   quantity replaces it in workstream B5.
+>
+> The M/M/1 formula was inherited verbatim from HED §III-D → BTP §3.5 → abstract.
+> It is the wrong model for the finite-capacity loss system that exists
+> (`audit/ERRATA.md` S-05). Implementing real queues is a separate project (M-10).
 
 ---
 
