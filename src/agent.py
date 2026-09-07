@@ -363,6 +363,17 @@ class DQNAgent:
             validation_split=0.2
         )
         # Decay epsilon
+        # [SAFETAIL][AGENT][S-16] SUBTRACTIVE step (constants.epsilon_decay_step),
+        # NOT BTP 4.4's multiplicative `eps <- eps*(1-gamma_eps)`. Kept
+        # deliberately: this is what produced every run under results/, so
+        # switching schedules would silently invalidate the comparison. BTP 4.4
+        # is the thing that is wrong (audit/ERRATA.md S-16).
+        # [SAFETAIL][AGENT][KNOWN][D-37] The floor is a GUARD, not a CLAMP: the
+        # last step can land up to `epsilon_decay` BELOW epsilon_min and stay
+        # there (e.g. 0.1005 -> 0.0985 with a floor of 0.1). Left as-is on
+        # purpose -- clamping would change epsilon in every existing run by ~1.5%
+        # and therefore change published numbers. Fix it together with the next
+        # full re-run, not before. See the fixes report, "new findings".
         if self.epsilon > self.epsilon_min:
             self.epsilon -= self.epsilon_decay
 

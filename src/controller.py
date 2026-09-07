@@ -23,7 +23,13 @@ _AUDIT_REPLAY = os.environ.get("SAFETAIL_AUDIT_REPLAY", "0") not in ("0", "", "f
 
 
 class Controller:
-    def __init__(self, num_servers=5, steps_per_episode=10, chunks_per_episode=3):
+    # [SAFETAIL][CONTROLLER][FIX][D-43] the episode LENGTH and the episode COUNT
+    # now come from one place: constants.CHUNKS_PER_EPISODE feeds both this
+    # default and the derivation of constants.no_of_episodes. They used to
+    # disagree (length 3, count derived from episode_size=4).
+    def __init__(self, num_servers=5, steps_per_episode=10, chunks_per_episode=None):
+        if chunks_per_episode is None:
+            chunks_per_episode = getattr(constants, "CHUNKS_PER_EPISODE", 3)
         self.access_rate_log = []  # [(episode, avg_access_rate)]
         self.testing_phase_active = False
         self.testing_request_limit = 3000
@@ -64,6 +70,17 @@ class Controller:
         # [SAFETAIL][CONTROLLER][D-21] requests dropped after saturation retries
         self.dropped_requests = 0
 
+        # [SAFETAIL][CONTROLLER][FIX][D-32] Per-EPISODE access rates, reset at
+        # every episode boundary. `agent.episode_access_rate` grows for the whole
+        # run and is never cleared, so `np.mean(agent.episode_access_rate)` was a
+        # cumulative (expanding) mean: monotone by construction, final value
+        # bit-identical to the overall request-wise mean, and therefore
+        # structurally incapable of showing the "adaptation over time" BTP 6.2
+        # reads off it. This list is the true per-episode series.
+        # It is also populated on EVERY policy path (external policy, native
+        # SafeTail, fixed-K baselines), so baseline runs no longer log all-zeros.
+        self.episode_access_rates = []
+
         # ---------------- Plotting Configuration ----------------
         self.plot_every_n_episodes = 20  # Generate plots every N episodes
         self.plot_dir = Path(constants.training_log_folder + "/plots")
@@ -78,7 +95,8 @@ class Controller:
             reward_gamma=constants.discount_rate,
             epsilon=1.0,
             epsilon_min=constants.epsilon_min,
-            epsilon_decay=constants.gamma_decay,
+            # [SAFETAIL][AGENT][FIX][S-16] subtractive step, correctly named.
+            epsilon_decay=constants.epsilon_decay_step,
             batch_size=constants.batch_size,
             beta=constants.beta,
             median_computation_delay=constants.median_computation_delay,
@@ -141,6 +159,14 @@ class Controller:
 
         with open(self.request_access_log_path, "w") as f:
             f.write("request_id,request_type,access_rate\n")
+        # [SAFETAIL][CONTROLLER][D-45] ⚠️ MIXED UNITS, and the header does not say
+        # so. computation_delay / propagation_delay / transmission_delay are in
+        # SECONDS; queueing_delay / total_latency / end_to_end_latency are in
+        # MILLISECONDS. Summing the three component columns and comparing against
+        # total_latency is therefore out by 1000x.
+        # Deliberately NOT renamed: every run under results/ would stop being
+        # readable, and tools/make_figures.py converts explicitly (see its _TO_MS
+        # map). Unify at the next format break, and add the unit to each name.
         header = (
             "request_id,request_type,contention_str,computation_delay,propagation_delay,"
             "transmission_delay,queueing_delay,total_latency,message_size_kb,end_to_end_latency\n"
@@ -154,6 +180,12 @@ class Controller:
             self.agent.testing_start_index = len(self.agent.rewards)
 
     def log_request_access_rate_with_type(self, request_id, request_type, access_rate):
+        # [SAFETAIL][CONTROLLER][FIX][D-32] record into the per-episode series as
+        # well as the per-request CSV. Called from every selection branch.
+        try:
+            self.episode_access_rates.append(float(access_rate))
+        except Exception:
+            pass
         try:
             row = f"{request_id},{request_type},{access_rate:.6f}\n"
             with open(self.request_access_log_path, "a") as f:
@@ -427,9 +459,25 @@ class Controller:
                 #
                 # For each request with completion time T:
                 #
-                #     P(T) = 1                      if T <= D1        (fully satisfied)
-                #     P(T) = (T - D1) / (D2 - D1)   if D1 < T <= D2   (linearly decreasing satisfaction)
-                #     P(T) = 0                      if T > D2         (not satisfied)
+                #     P(T) = 1                          if T <= D1      (fully satisfied)
+                #     P(T) = 1 - (T - D1) / (D2 - D1)   if D1 < T <= D2 (linearly DECREASING)
+                #     P(T) = 0                          if T > D2       (not satisfied)
+                #
+                # [SAFETAIL][REWARD][FIX][D-38] The leading `1 -` was MISSING from
+                # both this comment and the code below, so satisfaction INCREASED
+                # with lateness. The middle branch was discontinuous at BOTH ends:
+                # it gave 0 at T=D1 (where the branch above gives 1) and 1 at
+                # T=D2 (where the branch below gives 0). With D1=30, D2=200, a
+                # request finishing at 40 ms scored 0.06 instead of 0.94.
+                # P(T) feeds omega, the degree of satisfaction, which is a term of
+                # the EPISODIC reward -- so the episodic signal rewarded missing
+                # deadlines for the entire project.
+                # Authority: BTP documentation.pdf 3.7 states `1 - (T-D1)/(D2-D1)`
+                # explicitly. This is the one mechanism BTP genuinely got right
+                # (audit/ERRATA.md S-01, a correct repair of HED's malformed
+                # omega) -- and the code did not implement it.
+                # Found by the external defect dossier (Uttam), 3 Sep 2026;
+                # reproduced here before fixing.
                 #
                 # where:
                 #     D1 = soft deadline
@@ -465,7 +513,9 @@ class Controller:
                 if T <= D1:
                     self.average_P_T_values.append(1)
                 elif D1 < T <= D2:
-                    P_T = (T - D1) / (D2 - D1)
+                    # [SAFETAIL][REWARD][FIX][D-38] the leading `1 -` was missing;
+                    # satisfaction increased with lateness. See the block above.
+                    P_T = 1.0 - (T - D1) / (D2 - D1)
                     self.average_P_T_values.append(P_T)
                 else:
                     self.average_P_T_values.append(0)
@@ -870,6 +920,19 @@ class Controller:
                 k = max(1, min(int(k_str), self.num_servers))
                 action_subset = list(selectors[fam](k))
                 action_index = subset_to_index(action_subset, self.num_servers) if action_subset else 0
+                # [SAFETAIL][CONTROLLER][FIX][D-32] fixed-K baselines log their
+                # access rate too. Previously this block sat outside the logging
+                # branches, so every baseline run wrote an empty
+                # request_wise_access_log.csv and an all-zero access_rate_log.csv,
+                # making the access-rate figure incomparable across policies.
+                try:
+                    self.log_request_access_rate_with_type(
+                        request_id=request.request_id,
+                        request_type=str(request.combination),
+                        access_rate=len(action_subset) / self.num_servers,
+                    )
+                except Exception as e:
+                    print(f"[CONTROLLER] Access rate logging failed: {e}")
         # ─────────────────────────────────────────────────────────────────────
         except Exception as e:
             print(f"[CONTROLLER, !] Agent failed to produce action: {type(e).__name__} - {e}")
@@ -1164,8 +1227,17 @@ class Controller:
         # if self.current_episode % 10 == 0:
         #     self.save_checkpoint()
         # -------- ACCESS RATE LOGGING --------
-        if len(self.agent.episode_access_rate) > 0:
-            avg_access_rate = np.mean(self.agent.episode_access_rate)
+        # [SAFETAIL][CONTROLLER][FIX][D-32] mean over THIS episode's requests.
+        # Was `np.mean(self.agent.episode_access_rate)` over a list that is never
+        # cleared -- a cumulative mean, monotone by construction, whose final
+        # value equals the overall request-wise mean. `self.episode_access_rates`
+        # is reset at the bottom of this method, so the column is now a genuine
+        # per-episode series that CAN go up or down.
+        if len(self.episode_access_rates) > 0:
+            avg_access_rate = float(np.mean(self.episode_access_rates))
+        elif len(self.agent.episode_access_rate) > 0:
+            # fallback for the native path if a branch ever skips the logger
+            avg_access_rate = float(np.mean(self.agent.episode_access_rate))
         else:
             avg_access_rate = 0.0
 
@@ -1178,6 +1250,7 @@ class Controller:
         except Exception as e:
             print(f"[CONTROLLER] Failed to save access rate CSV: {e}")
         # Reset episode-level tracking
+        self.episode_access_rates = []  # [SAFETAIL][CONTROLLER][FIX][D-32]
         self.step_experiences = []
         self.step_rewards = []
         self.episode_waiting_times = []
@@ -1198,6 +1271,11 @@ class Controller:
             print("[CONTROLLER] ✅ All training episodes finished.")
             # Generate final comprehensive plots
             self.generate_final_plots()
+            # [SAFETAIL][CONTROLLER][FIX][M-14] plot the testing slice too. The
+            # method existed but was `pass` AND was never called, so the
+            # train/test split produced no reportable testing evidence.
+            if self.testing_phase_active:
+                self.generate_testing_plots()
             self.training_done.set()
 
         print(f"{'=' * 60}\n")
@@ -1244,9 +1322,88 @@ class Controller:
         print("[CONTROLLER] Testing phase started.")
 
     def generate_testing_plots(self):
-        # [SAFETAIL][DEAD][D-29][M-14] empty stub -- testing-phase results are not
-        # plotted at all. Implement or drop the split's plotting claim (B9/M-14).
-        pass
+        """
+        [SAFETAIL][CONTROLLER][FIX][M-14][D-29] Plot the TESTING-phase slice.
+
+        Was `pass`. The train/test split therefore produced no reportable
+        evidence at all: every plot covered the whole run, and the testing
+        segment -- the only part run with epsilon = 0 and a frozen policy -- was
+        never shown on its own.
+
+        Writes to `<training_log_folder>/plots/testing/` and additionally dumps
+        the raw testing-slice arrays to `testing_metrics.csv` so a number in a
+        plot is always also in a CSV (the plan.md 9.2 rule that gate G6 enforces
+        for the publication figures).
+
+        Slice boundaries come from the `testing_start_*_index` markers that
+        `_save_and_enter_testing()` records; each metric has its own because they
+        are appended at different rates (per episode vs per request).
+        """
+        if getattr(constants, "SMOKE", False):
+            return  # [SAFETAIL][PLOT][smoke] plan.md 9.4
+        if not self.testing_phase_active:
+            print("[SAFETAIL][PLOT][M-14] testing phase never started; no testing plots.")
+            return
+
+        import csv as _csv
+
+        test_dir = self.plot_dir / "testing"
+        test_dir.mkdir(parents=True, exist_ok=True)
+
+        def _tail(arr, start_attr):
+            try:
+                start = int(getattr(self.agent, start_attr, 0) or 0)
+                return list(np.asarray(arr)[start:])
+            except Exception:
+                return []
+
+        series = {
+            "episodic_reward": _tail(self.agent.rewards, "testing_start_reward_index"),
+            "latency_ms": _tail(self.agent.latencies, "testing_start_latency_index"),
+            "access_rate": _tail(self.agent.episode_access_rate, "testing_start_access_index"),
+        }
+
+        csv_path = test_dir / "testing_metrics.csv"
+        try:
+            n = max((len(v) for v in series.values()), default=0)
+            with open(csv_path, "w", newline="") as fh:
+                w = _csv.writer(fh)
+                w.writerow(["i"] + list(series))
+                for i in range(n):
+                    w.writerow([i] + [(series[k][i] if i < len(series[k]) else "")
+                                      for k in series])
+            print(f"[SAFETAIL][PLOT][M-14] testing metrics -> {csv_path} ({n} rows)")
+        except Exception as e:
+            print(f"[SAFETAIL][PLOT][M-14] failed to write {csv_path}: "
+                  f"{type(e).__name__} - {e}")
+
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            panels = [(k, v) for k, v in series.items() if len(v) > 0]
+            if not panels:
+                print("[SAFETAIL][PLOT][M-14] testing slice is empty; nothing to plot.")
+                return
+            fig, axes = plt.subplots(len(panels), 1, figsize=(10, 3.2 * len(panels)),
+                                     squeeze=False)
+            for ax, (name, vals) in zip(axes[:, 0], panels):
+                ax.plot(vals, linewidth=1.3)
+                ax.axhline(y=float(np.mean(vals)), linestyle="--", linewidth=1.0,
+                           label=f"mean {np.mean(vals):.4f}")
+                ax.set_title(f"testing phase - {name}  (n={len(vals)})")
+                ax.set_xlabel("index within testing slice")
+                ax.legend(loc="best", fontsize=8)
+                ax.grid(alpha=0.3)
+            fig.tight_layout()
+            out = test_dir / f"testing_metrics_{time.strftime('%Y%m%d_%H%M%S')}.png"
+            fig.savefig(out, dpi=150)
+            plt.close(fig)
+            print(f"[SAFETAIL][PLOT][M-14] testing plots -> {out}")
+        except Exception as e:
+            print(f"[SAFETAIL][PLOT][M-14] failed to render testing plots: "
+                  f"{type(e).__name__} - {e}")
 
     def generate_plots(self):
         """

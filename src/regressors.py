@@ -43,9 +43,12 @@ HED SS IV-D live-utilisation features (M-15); report held-out R2 before/after.
 from __future__ import annotations
 
 import pickle
+import random
 from pathlib import Path
 
 import pandas as pd
+
+import constants
 
 _REPO = Path(__file__).resolve().parent.parent
 _MODELS = _REPO / "models"
@@ -58,6 +61,8 @@ LETTER_FOR_TASK = {v: k for k, v in TASK_FOR_LETTER.items()}
 # CSV is byte-identical to server 1's and its shipped model needs columns that
 # CSV does not contain. Alias it to server 1.
 SERVER_ALIAS = {2: 1}
+
+TIME_COL = "Total Processing Time (sec)"   # the measured target in every trace
 
 _GPU_COLS = {"peak_gpu", "peak_gpu_memory", "total_processing_time"}
 _CPU_COLS = {"num_tasks", "peak_cpu", "avg_cpu_clock", "num_files"}
@@ -118,8 +123,41 @@ class TracePredictor:
         df["_combo_key"] = df["Combination"].astype(str).str.strip().str.lower()
         self.df = df.set_index("_combo_key", drop=False)
 
+        # [SAFETAIL][REGRESSOR][D-40] How many measurements does this trace carry
+        # per contention string? 1 == the averaged-at-collection-time dataset
+        # that has no recoverable variance. >1 == repeated measurements, i.e. a
+        # real distribution the simulator can sample from.
+        _counts = self.df.index.value_counts()
+        self.rows_per_combo_max = int(_counts.max()) if len(_counts) else 0
+        self.rows_per_combo_mean = float(_counts.mean()) if len(_counts) else 0.0
+        self.has_repeated_measurements = self.rows_per_combo_max > 1
+
     # ------------------------------------------------------------------ #
     def _row(self, combined_str: str) -> pd.Series:
+        """
+        [SAFETAIL][REGRESSOR][FIX][D-40] Pick ONE measurement for this contention
+        string, SAMPLING when the trace has more than one.
+
+        This used to be an unconditional `row.iloc[0]`: with repeated
+        measurements it would silently use the first and discard the rest, so a
+        newly-collected dataset with a real distribution would produce exactly
+        the same zero-variance behaviour as the averaged one, and the data
+        collection would look like it had achieved nothing.
+
+        Modes (`constants.TRACE_SAMPLING`, env `SAFETAIL_TRACE_SAMPLING`):
+          "sample" (default) -- draw uniformly among the matching rows. On a
+                     single-row-per-combination trace this is IDENTICAL to the
+                     old behaviour, so today's numbers are unchanged; the moment
+                     repeated measurements exist it becomes the measured
+                     computation-time distribution, which is what D-40 needs.
+          "first"  -- always row 0. Exactly the pre-fix behaviour; use it to
+                     reproduce an old run against a new dataset.
+          "mean"   -- average the numeric columns across the repeats, i.e.
+                     reproduce what the CURRENT dataset already is.
+
+        Sampling goes through `random`, which `src/_seeding.py` seeds, so a run
+        stays reproducible for a given SAFETAIL_SEED.
+        """
         key = str(combined_str).strip().lower()
         if key not in self.df.index:
             raise KeyError(
@@ -128,9 +166,19 @@ class TracePredictor:
                 f"The contention-free single-letter fallback is DISABLED by design."
             )
         row = self.df.loc[key]
-        if isinstance(row, pd.DataFrame):
-            row = row.iloc[0]
-        return row
+        if not isinstance(row, pd.DataFrame):
+            return row                      # single measurement -- nothing to choose
+
+        mode = str(getattr(constants, "TRACE_SAMPLING", "sample")).strip().lower()
+        if mode == "first":
+            return row.iloc[0]
+        if mode == "mean":
+            num = row.select_dtypes(include="number").mean()
+            base = row.iloc[0].copy()       # keep the non-numeric columns
+            for c in num.index:
+                base[c] = num[c]
+            return base
+        return row.iloc[random.randrange(len(row))]
 
     def _build_features_gpu(self, row: pd.Series) -> dict:
         combination = str(row["Combination"]).lower()
@@ -172,7 +220,56 @@ class TracePredictor:
             "num_files": 500,                       # original server3 wrapper hardcodes 500
         }
 
+    def measured_values(self, combined_str: str) -> list[float]:
+        """
+        [SAFETAIL][REGRESSOR][D-40] Every MEASURED processing time for this
+        contention string, straight from the trace. Empty if the string is
+        absent or the column is missing.
+        """
+        key = str(combined_str).strip().lower()
+        if key not in self.df.index or TIME_COL not in self.df.columns:
+            return []
+        sel = self.df.loc[key]
+        vals = (sel[TIME_COL] if isinstance(sel, pd.DataFrame) else pd.Series([sel[TIME_COL]]))
+        return [float(v) for v in vals.dropna().tolist()]
+
     def predict_from_combination(self, combined_str: str) -> float:
+        """
+        Computation time for one task under one contention string.
+
+        [SAFETAIL][REGRESSOR][D-40] `constants.COMPUTATION_SOURCE` selects where
+        the number comes from:
+
+          "model" (DEFAULT, today's behaviour)
+              Ask the fitted regressor. ⚠️ These are POINT predictors trained on
+              squared error, so they output E[y|x] -- the conditional MEAN. That
+              is why they cannot produce a tail even when the trace can: on
+              server5's 'sd', the two measured values are 33.80 ms and 23.56 ms
+              and the RandomForest returns 20.91 ms for BOTH. Handing such a
+              model a distributional dataset does not give you a distribution;
+              it gives you a better-estimated mean.
+
+          "empirical"
+              Sample uniformly among the MEASURED values for this contention
+              string, falling back to the model only for strings the trace does
+              not contain. This is the mode to use once repeated measurements
+              exist: the variance is then measured, not assumed, and no
+              retraining is required to obtain it.
+
+        So D-40 has two halves and BOTH are needed:
+          (1) data with repeats            -- being collected;
+          (2) an inference path that does not average them away -- this.
+
+        Default stays "model" so today's numbers are unchanged. Run
+        `python tools/verify_dataset.py` (gate G8) when the new data lands; it
+        tells you whether "empirical" is worth switching on.
+        """
+        source = str(getattr(constants, "COMPUTATION_SOURCE", "model")).strip().lower()
+        if source == "empirical":
+            vals = self.measured_values(combined_str)
+            if vals:
+                return vals[random.randrange(len(vals))] if len(vals) > 1 else vals[0]
+            # unmeasured contention string -> fall through to the model
         row = self._row(combined_str)
         feats = self._build_features_gpu(row) if self.schema == "gpu" else self._build_features_cpu(row)
         missing = [c for c in self.feature_columns if c not in feats]

@@ -33,6 +33,23 @@ REPO = Path(__file__).resolve().parent.parent
 REF = REPO / "results" / "reference_v0"
 PCTS = (50, 90, 95, 99)
 
+# [SAFETAIL][PLOT][FIX][D-11] Single source of truth for "which latency".
+# `constants.LATENCY_METRIC` (SAFETAIL_LATENCY_METRIC) was declared as the B5
+# metric decision but consumed NOWHERE -- the figure script had its own
+# independent default, so the documented knob did nothing. It now sets this
+# script's default; --metric still overrides it for a one-off.
+_METRIC_COLUMN = {"service": "total_latency", "end_to_end": "end_to_end_latency"}
+
+
+def _default_metric() -> str:
+    try:
+        sys.path.insert(0, str(REPO / "src"))
+        import constants  # noqa: E402
+        name = str(getattr(constants, "LATENCY_METRIC", "service")).strip()
+    except Exception:
+        name = "service"
+    return _METRIC_COLUMN.get(name, "total_latency")
+
 # Order + colour is stable across every figure so panels can be read together.
 _STYLE = {
     "SafeTail-2.0 (shipped)":     "#0072B2",
@@ -235,6 +252,17 @@ def fig_by_type(runs, out: Path, metric: str, name="F6_by_request_type"):
 def fig_decomposition(runs, out: Path, name="F7_latency_decomposition"):
     P = pooled(runs); labs = list(P); rows = []
     fig, ax = plt.subplots(figsize=(13, 5)); bottom = np.zeros(len(labs))
+    # [SAFETAIL][PLOT][D-45] latency_log.csv MIXES UNITS and its header does not
+    # say so: computation/propagation/transmission are in SECONDS, while
+    # queueing_delay, total_latency and end_to_end_latency are in MILLISECONDS.
+    # This used to be a bare `m * 1000.0` with a four-word comment -- exactly the
+    # kind of silent per-column adjustment that D-03 was. The conversion is now
+    # an explicit, named map, so it is auditable and so nobody "simplifies" it
+    # away. The columns are NOT renamed: every run under results/ would stop
+    # being readable. Unify at the next format break.
+    # Raised by the external defect dossier (Uttam); registered here as D-45.
+    _TO_MS = {"computation_delay": 1000.0, "propagation_delay": 1000.0,
+              "transmission_delay": 1000.0, "queueing_delay": 1.0}
     for col, pretty in [("computation_delay", "computation"), ("propagation_delay", "propagation"),
                         ("transmission_delay", "transmission"), ("queueing_delay", "queueing")]:
         vals = []
@@ -243,7 +271,7 @@ def fig_decomposition(runs, out: Path, name="F7_latency_decomposition"):
             if col not in d.columns:
                 vals.append(0.0); continue
             m = float(d[col].mean())
-            vals.append(m if col == "queueing_delay" else m * 1000.0)  # queue is already ms
+            vals.append(m * _TO_MS[col])
         ax.bar(labs, vals, bottom=bottom, label=pretty, edgecolor="black", linewidth=.3)
         rows += [{"policy": l, "component": pretty, "mean_ms": v} for l, v in zip(labs, vals)]
         bottom += np.array(vals)
@@ -341,9 +369,12 @@ def fig_budget(out: Path, metric: str, name="F8_budget_3x"):
 def main() -> int:
     ap = argparse.ArgumentParser(description="SafeTail comparison figures")
     ap.add_argument("--out", default=str(REPO / "figures"))
-    ap.add_argument("--metric", default="total_latency",
+    # [SAFETAIL][PLOT][FIX][D-11] default comes from constants.LATENCY_METRIC.
+    ap.add_argument("--metric", default=_default_metric(),
                     choices=["total_latency", "end_to_end_latency"])
     args = ap.parse_args()
+    print(f"[SAFETAIL][PLOT][D-11] latency column = {args.metric} "
+          f"(constants.LATENCY_METRIC -> {_default_metric()})")
     out = Path(args.out)
 
     runs = discover_runs()

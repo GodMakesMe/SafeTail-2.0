@@ -94,7 +94,19 @@ class Request:
         # [SAFETAIL][FIX][D-23] accumulated D-21 saturation-retry backoff (s);
         # this is the ONLY genuine queue wait in an M/M/c/c loss system.
         self._saturation_wait_s = 0.0
-        self.deadline = np.asarray([], dtype=float)
+        # [SAFETAIL][USER][FIX][D-44] STORE the `deadline` constructor argument.
+        # It was accepted and then thrown away -- `self.deadline` was hardcoded to
+        # an empty array, so `request.deadline[0]` / `[1]` could never work and
+        # the two call sites that wanted it (controller.py, soft/hard deadline)
+        # are commented out to this day.
+        # ⚠️ This CHANGES THE STATE VECTOR. `agent.request_to_state_array` flattens
+        # every numeric attribute of Request (D-35), so a 2-element deadline adds
+        # 2 elements the network did not previously see. Only the native 2.0
+        # policy is affected -- baselines/safetail_v1 builds its own flat state
+        # (nS = 2*beta+2) and the Oracle uses none -- and the D-38 P(T) repair
+        # already forces a 2.0 re-run, so this rides along with it.
+        # Raised independently by the external defect dossier (Uttam) as its D-15.
+        self.deadline = np.asarray(deadline if deadline is not None else [], dtype=float)
         self.arrival_time = time.time() * 1000.0
         self.queue_waiting_time = 0.0
         self.message_size = int(message_size)

@@ -283,6 +283,55 @@ rand_3      36.08    57.63    72.36   102.99     ← beats SafeTail at p95/p99
 | D-34 | **Requests carry no workload variation.** `message_size=1024`, `bandwidth=20` are literals for every request; only the type letter is random. BTP §3.3's "input/output data sizes" and "FLOPs, input dimensions" do not exist. | `src/main.py` request_factory |
 | D-35 | **BTP §4.2 misdescribes the state** as a `(β+1)`-dim load vector. The real state is `agent.request_to_state_array` flattening *every* numeric attribute of `Request`, including the full ragged `server_np`. `nS` is dead. **Note: this makes the encoder contribution legitimate** — the input genuinely is variable-length. The report understates its own system. | `src/agent.py:37`, `:231` |
 
+### 4.4b Defects raised by the external dossier (added 7 Sep 2026)
+
+A second workstream (Uttam) audited the same inherited codebase independently and
+produced *SafeTail Defect Dossier*, 3 Sep 2026. It confirmed D-03, D-04, D-05,
+D-06, D-16, D-17, D-34 and the D-02 family from its own reading, and raised
+**four findings this register did not have.** All four were reproduced against
+this repository before being entered here.
+
+> **All 20 pages read.** (The first copy received was truncated to 3 MiB; the
+> full 8 MB file is preserved at `audit/dossier_uttam/`.)
+
+> ⚠️ **ID-NAMESPACE COLLISION — read before cross-referencing.** The dossier uses
+> its **own** `D-nn` numbering, which does **not** match this register. E.g. the
+> dossier's `D-01` is the P(T) sign (our **D-38**), its `D-07` is the missing
+> computation variance (our **D-40**), its `D-08` is the ping/compute correlation
+> (our **D-41**), its `D-10` is the server-2 trace (our **D-15**), its `D-13`/`D-14`
+> are the termination bugs (our **D-42**/**D-43**), and its `D-15` is the discarded
+> deadline (our **D-44**). Always say which register a number belongs to.
+
+| ID | Defect | Severity | Status | Verified evidence |
+|---|---|---|---|---|
+| **D-38** Δ | **`P(T)` has an inverted sign.** `controller.py` computed `P_T = (T-D1)/(D2-D1)`; the leading `1 -` is missing. Satisfaction therefore **increased with lateness** — with `D1=30, D2=200`, a request finishing at 40 ms scored **0.06 instead of 0.94**. The piecewise was discontinuous at *both* ends (1→0 at `D1`, 1→0 at `D2`), which is how it can be identified as a bug without reading any document. `P(T)` feeds `ω`, a term of the **episodic** reward, so the episodic signal rewarded missing deadlines for the entire project. **BTP §3.7 states the correct form explicitly, and it is the one mechanism BTP genuinely got right (S-01) — the code simply did not implement it.** | **S1** | ✅ **fixed 7 Sep 2026** | `src/controller.py:486` (pre-fix). Comment block at `:449` carried the same wrong formula while labelling it "linearly decreasing". Tests `test_D38_*`. |
+| **D-39** Δ | **Four predictors fed unscaled features to scale-sensitive models.** `server3/detect`, `server3/speech`, `server4/speech`, `server4/predict` called `model.predict(X)` without `scaler.transform(X)`, although both the fitted scaler and a `LinearRegression` (not scale-invariant) were in the bundle. Dossier RMSE: **3.3×10¹⁰ s unscaled vs 0.60 s scaled** — ten orders of magnitude. | **S1** | ✅ **fixed incidentally by B1** | `src/regressors.py:185-187` applies the scaler uniformly for every server/task. Was never registered as its own defect because unifying the 15 wrappers removed it as a side effect. Test `test_D39_*`. |
+| **D-40b** Δ | **The regressors would average away a distributional dataset too.** The shipped models are **point predictors fitted on squared error**, so they return `E[y|x]` — the conditional mean. Demonstrated on the only repeats the current data happens to contain (`server5.csv`, contention `'sd'`): measured **33.7991 ms** and **23.5592 ms**, RandomForest returns **20.9059 ms for both**. **Collecting repeated measurements is therefore necessary but NOT sufficient** — the inference path must also stop averaging them. Separately, `TracePredictor._row` was an unconditional `.iloc[0]`, which would have silently used the first repeat and discarded the rest. | **S1** | ✅ **plumbing fixed 8 Sep 2026**, awaiting data | `constants.TRACE_SAMPLING` (sample/first/mean; `LEGACY_ENV` pins `first` so `reference_v0` still reproduces) and `constants.COMPUTATION_SOURCE` (`model` default / `empirical`). Gate **G8** = `tools/verify_dataset.py`. Tests `test_D40_*`. |
+| **D-40** Δ | **Computation latency has no variance at all — there is no tail to optimise.** `TracePredictor.predict_from_combination` is deterministic: 8 consecutive calls for `server1/detect` on `'ddd'` return `2.4931` ms, **stddev exactly 0**. The only stochasticity anywhere is propagation jitter and (pre-D-12) a 5-value transmission draw. **The root cause is in the data, not the code:** `dataset/server{1,3,5}.csv` have 363 rows / **363 unique contention strings / `Iteration == [1]`** — every scenario was measured exactly once, and each measurement is already an average over ~500 files. The spread was averaged away at collection time and cannot be recovered. **It is a regression, not an original gap:** SafeTail 1.0 added per-concurrency Gaussian noise (`_spec_source/v1_agent.py:73`, `pred + np.random.normal(0, st_dev[...])`, with a 20-element measured `st_dev` table); 2.0 dropped the line. Measured on the shipped run: **p99/p50 = 2.89×**, where real tail-latency problems are 5–50×. | **S1** | ⛔ **OPEN — design decision** | reproduced 7 Sep 2026; `test_D40_*` asserts the current state so the physics cannot change silently |
+| **D-41** Δ | **Propagation and compute speed are rank-correlated across servers, so MinProp is near-optimal by construction.** Median ping `[5.1, 12.6, 51.3, 67.5, 71.2]` ms vs `detect` compute `[2.39, 2.39, 46.23, 57.89, 2.72]` ms — **Spearman ρ = 0.95 across servers 1–4** (0.67 over all five; server 5 is the sole exception, far but fast). "Pick the nearest" is therefore also "pick the fastest", and there is very little for a scheduler to learn. MinProp-2 lands within ~2 % of an all-5-server Oracle at p99 in our own runs. | **S1** (finding, not a code defect) | ⛔ **OPEN — a property of the testbed** | `dataset/propagation_delays.pkl` + `TracePredictor`, recomputed 7 Sep 2026 |
+
+**Second batch (dossier pages 9–20).**
+
+| ID | Defect | Severity | Status | Verified evidence |
+|---|---|---|---|---|
+| **D-42** Δ | **The documented socket entry point can never terminate — it blocks forever.** `main.py` waited on `controller.training_done` with **no timeout**, and the event fires only at `current_episode >= expected_episodes`. With the shipped constants that target is `no_of_chunk/episode_size` = **25,000 episodes**, while the sender delivers at most `no_of_burst × max_burst` = 1000×4 = **4,000 chunks** → 1,333 episodes at 3 chunks each. **Unreachable by ~19×.** The process hangs with partial results already on disk. *(The in-process `--run` path is unaffected — it exits on its own chunk loop, which is why every run under `results/` terminated. But the previous batch's full-length socket runs cannot have exited normally.)* | **S2** | ✅ **fixed 8 Sep 2026** | `src/main.py:310` (pre-fix). Now a bounded wait (`SAFETAIL_DRAIN_TIMEOUT`, default 120 s) that finalises and exits. Dossier `D-13`. Test `test_D42_*`. |
+| **D-43** Δ | **Episode length and episode count disagreed.** The controller ends an episode every `chunks_per_episode = 3` chunks; `no_of_episodes` divided by `episode_size = 4`. Training targets 25 % more episodes than the run structure produces — the arithmetic root cause of D-42. | **S3** | ✅ **fixed 8 Sep 2026** | one shared `constants.CHUNKS_PER_EPISODE` now feeds both the controller default and the `no_of_episodes` derivation, and the target is clamped to what the sender can deliver. Dossier `D-14`. Test `test_D43_*`. |
+| **D-44** Δ | **`Request.__init__` accepted `deadline` and threw it away** — `self.deadline = np.asarray([], dtype=float)`. Both call sites that wanted `request.deadline[0]/[1]` are commented out to this day because they could never have worked. | **S3** | ✅ **fixed 8 Sep 2026** | `src/user.py:97` (pre-fix). ⚠️ **Changes the state vector**: `request_to_state_array` flattens every attribute (D-35), so this adds 2 elements. Only the native 2.0 policy is affected, and D-38 already forces that re-run. Dossier `D-15`. Test `test_D44_*`. |
+| **D-45** Δ | **`latency_log.csv` mixes units with no unit in the header.** `computation_delay`, `propagation_delay`, `transmission_delay` are in **seconds**; `queueing_delay`, `total_latency`, `end_to_end_latency` are in **milliseconds**. Summing the components and comparing against the total is out by 1000×. `tools/make_figures.py` compensated with a bare `m * 1000.0` and a four-word comment — the same silent-per-column-adjustment pattern as D-03. | **S3** | ⚠️ **documented + de-magicked**; columns deliberately NOT renamed | conversion is now an explicit named `_TO_MS` map, and the header-writing site carries a warning. Renaming would make every run under `results/` unreadable — unify at the next format break. Test `test_D45_*`. |
+| **D-15 (extended)** | Beyond the byte-identical `server1.csv`/`server2.csv`: **server 2's *models* are trained on the CPU feature schema** (`peak_cpu`, `avg_cpu_clock`) while `server2.csv` is a **GPU** trace with no CPU columns — the model and the trace describe **different machines**. `models/server2/detect_regressor_model.pkl` is byte-identical to server 4's. The BTP poster lists server 2 as an AMD Ryzen 5 7600X (6 cores, no GPU); **that machine's trace is not in the repository at all.** | **S2** | ⚠️ two different resolutions in play | *this* repo aliases server 2 → server 1 (β = 5, documented, G1 warns); the dossier **excludes** server 2 via `ACTIVE_SERVERS` (β = 4). Both are defensible; **they must not be mixed in one comparison.** β = 4 is arguably the more honest configuration. |
+
+**Consequence for D-10 and for the write-up.** §4.1 attributes MinProp's win
+primarily to **D-02** (identical computation across servers leaves propagation as
+the only discriminating signal). D-41 shows that is *not the whole story*: even
+with D-02 fixed and computation genuinely heterogeneous, propagation still ranks
+the servers almost exactly as computation does, so MinProp remains close to
+optimal. **Fixing D-02 does not make the environment learnable.** Combined with
+D-40 — no tail exists to optimise — the honest reading is that **this testbed
+cannot demonstrate the thing the project set out to demonstrate.** That is a
+finding worth stating plainly, and it is the strongest argument for collecting
+repeated measurements (multiple `Iteration` values per contention string) before
+any further modelling work.
+
 ### 4.5 Specification-defect register — the three-layer lineage
 
 §4.1–§4.4 audit **code against specification**. This section audits **the specifications against each other**, because they are not a flat set of requirements: ST → HED → BTP is a chain in which each layer corrected some of its parent's errors and introduced new ones. Reading them as a flat set produces two dangerous mistakes:
@@ -370,12 +419,32 @@ New findings logged this session: **D-36** (Windows cp1252 emoji-print crash),
 
 ### 6.1 Still to do
 
-| Workstream | Blocks / notes |
+> **Updated 7 Sep 2026.** B5, B7, B10, D and G5/G6 have since closed; the table
+> below now lists only what is genuinely open. The authoritative
+> fork→branch narrative is `FIXES_REPORT_SafeTail2.0_to_heterogenous.md`
+> at the project root.
+
+**Closed since this table was written:**
+
+| Workstream | Closed how |
 |---|---|
-| **B5** | D-11 (metric excludes queueing), D-12 (~45% is transmission noise), D-18 (double delay draw — deferred here from B8), D-23 (wall-clock wait), D-34 (no request-size variation). Involves the *"what does latency mean"* decision (§13.1(2)) — **wants advisor sign-off**. Blocks bit-reproducibility of seeds (B7). |
-| **B7** (finish) | seed *threading* is done and changes results between seeds; **error bars / IQR bands on figures** are part of workstream D. Bit-determinism blocked on B5/D-23. |
-| **D** | R-0…R-6 run matrix (3 seeds), figures F1–F8, gates **G5** (`check_manifest.py`), **G6** (`verify_figures.py`), `tools/make_figures.py`. Explicitly a separate phase — needs full training runs (hours). |
-| retrain (**B1b**) | drop `total_processing_time` leak (D-25, server1/5 models), HED §IV-D features (M-15), held-out R² before/after. Optional MLPs (D-26b). |
+| **B5** | commit `e744724`. D-11 (both `total_latency` and `end_to_end_latency` logged), D-12 + D-34 (transmission = f(payload, bandwidth); per-type payload sizes), D-18 (phase 7 reuses the phase-2 draw), D-23 (simulated wait). All four reversible via `SAFETAIL_LEGACY_ENV=1`, validated against `reference_v0`. |
+| **B7** | 3 seeds per configuration; `figures/` carries min/max whiskers and `table_per_seed.csv`. |
+| **B10** | D-03 offset deleted from both notebook cells, 7 Sep 2026. G6 no longer warns. |
+| **D** | run matrix + F1 F2 F5 F6 F7 F8 + `table_main.csv`; **G6** green. |
+| **G5** | `tools/check_manifest.py` + `src/_manifest.py`, 7 Sep 2026. Runs predating it are reported UNPROVENANCED. |
+| **M-14 · D-32 · S-16 · D-11(knob)** | 7 Sep 2026 — see CHANGELOG. |
+
+**Genuinely open:**
+
+| Item | Blocks / notes |
+|---|---|
+| retrain (**B1b**) | drop the `total_processing_time` target leak (D-25; server 1/5 "gpu"-schema models), adopt HED §IV-D live-utilisation features (M-15), report held-out R² before/after. Optional MLPs (D-26b). **Changes every latency number — wants advisor sign-off before it runs.** |
+| **F8 as specified** | B3's acceptance figure is the K-vs-`c_red` sweep over `C_RED_SWEEP`. The `F8_*` files currently in `figures/` are the 3× data-budget experiment, a different figure that took the name. Needs 6 full runs. |
+| **D-22 / D-24 / M-10** | Resolved by *retraction* (README + ERRATA now state Erlang-B and uniform arrivals). Implementing exponential inter-arrivals or real queues remains a separate project. |
+| **D-25 / D-26 / M-15** | Documented, not repaired — blocked on B1b above. |
+| **M-07 · M-08 · M-09 · M-11 · M-12 · M-13** | Deferred by §9.5 / §B11. Each has a recorded disposition; none is silently missing. |
+| **D-37** (new) | The ε floor is a guard, not a clamp: the final step can land up to `epsilon_decay_step` below `epsilon_min` and stay there. Left as-is deliberately — clamping shifts ε by ~1.5% in every existing run. Fix with the next full re-run. |
 
 ### 6.2 Session 0 — planning (unchanged)
 
@@ -796,6 +865,7 @@ A gate is a script in `tools/` that exits non-zero on failure. **No workstream i
 | **G5** | `check_manifest.py` | every `results/*/manifest.json` present, complete, zero `[DEGRADED]` counts, git clean | D |
 | **G6** | `verify_figures.py` | every figure has its companion CSV; no per-mode additive offsets anywhere in `tools/make_figures.py` (grep for `+ 0.005` and friends) (D-03) | D |
 | **G7** | `verify_types.py` | asserts the request-type mapping against the **dataset**, not against prose: for every `dataset/server{i}.csv`, the single-letter rows satisfy `s→Speech`, `d→Detect`, `p→Predict`; asserts the regressor for letter `x` looks up the matching script name; asserts `ORIGINAL_DEADLINES` pairs `s`→(100,400) and `d`,`p`→(30,200). Guards **S-14** — the one defect where a plausible-sounding document sentence would send someone to "fix" correct code | B1, B8, B12 |
+| **G8** | `verify_dataset.py` | **is the trace dataset fit to train on?** Per `dataset/server*.csv`: repeats per contention string (a distribution must exist at all), whether the spread is real (coefficient of variation — the same number copied is not a distribution), coverage of all 34 contention strings the simulator can ask for, the per-server column schema, and an `Iteration` column so repeats are identifiable. Guards **D-40**: the shipped traces carry ONE averaged measurement per scenario, so computation latency is deterministic and there is no tail to optimise. **Advisory by default** (exit 0, marker `[INADEQUATE]`) because today's dataset is known-inadequate and a permanently-red gate just gets ignored; `--strict` makes it BLOCK (exit 1, marker `[FAIL]`) — use that once the new data lands. | the D-40 re-run; B1b |
 
 **Regression suite:** `pytest tools/tests/` — one test per fixed defect, named `test_<ID>_<slug>`. Target: every `D-xx` marked fixed in `CHANGELOG.md` has a test.
 

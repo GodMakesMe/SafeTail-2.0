@@ -85,17 +85,49 @@ median_computation_delay = 0.05
 total_no_request = 500000
 chunk_size = 5
 no_of_chunk = int(total_no_request / chunk_size)
-# [SAFETAIL][DEAD][D-30] episode_size is vestigial: the controller's episode
-# length is `chunks_per_episode = 3`, not this. It only feeds `no_of_episodes`
-# below, whose value (25,000) is never reached (~1,000 episodes actually run).
+# [SAFETAIL][D-30][D-43] episode_size is vestigial: the controller's episode
+# length is `chunks_per_episode = 3`, not this.
 episode_size = 4
 no_of_burst = 1000
-no_of_episodes = int(no_of_chunk / episode_size)  # see D-30 note above
-learning_rate = 1e-6
-gamma_decay = 0.002
-epsilon_min = 0.1
+# Burst shape. Defined HERE, above the no_of_episodes derivation that reads
+# max_burst -- it used to be declared further down, so the derivation hardcoded
+# a literal 4 and changing max_burst silently desynchronised the episode target.
+# Flagged by the Claude Code verification session, 8 Sep 2026.
 min_burst = 2
 max_burst = 4
+
+# [SAFETAIL][MAIN][FIX][D-43] `no_of_episodes` is the run's termination target,
+# and it used to be `no_of_chunk / episode_size` = 100000/4 = 25,000 -- wrong
+# twice over:
+#   * it divides by episode_size (4) while the controller ends an episode every
+#     chunks_per_episode (3) chunks, and
+#   * it counts chunks the sender can never deliver: the run stops after
+#     no_of_burst bursts of at most max_burst chunks, i.e. 1000*4 = 4,000 chunks,
+#     not 100,000.
+# The target was therefore unreachable by ~19x, which is why the socket entry
+# point blocked forever (D-42).
+# It is now DERIVED from what can actually be delivered. Override with
+# SAFETAIL_NO_OF_EPISODES if you want the old (unreachable) behaviour back.
+# Raised independently by the external defect dossier (Uttam) as its D-14.
+CHUNKS_PER_EPISODE = _env_int("SAFETAIL_CHUNKS_PER_EPISODE", 3)
+_deliverable_chunks = min(no_of_chunk, no_of_burst * max_burst)
+no_of_episodes = _env_int("SAFETAIL_NO_OF_EPISODES",
+                          max(1, _deliverable_chunks // max(1, CHUNKS_PER_EPISODE)))
+learning_rate = 1e-6
+# [SAFETAIL][AGENT][FIX][S-16] epsilon schedule -- ONE statement, correctly named.
+# BTP 4.4 states a MULTIPLICATIVE decay `eps <- max(eps_min, eps*(1-gamma_eps))`;
+# the code has always done a SUBTRACTIVE step `eps -= gamma_decay`; and the
+# constant was named `gamma_decay`, which matches neither.
+# DECISION (plan.md 13.1): keep the SUBTRACTIVE step. It is what produced every
+# run in results/, so switching to multiplicative would silently invalidate the
+# whole comparison for a cosmetic agreement with the report. The report text is
+# what is wrong (audit/ERRATA.md S-16), not the code.
+# `epsilon_decay_step` is the name that describes it. `gamma_decay` is kept as a
+# deprecated alias so external scripts and baselines/safetail_v1 keep working.
+epsilon_decay_step = 0.002        # subtractive: eps <- max(eps_min, eps - this)
+gamma_decay = epsilon_decay_step  # [DEPRECATED][S-16] alias; use epsilon_decay_step
+epsilon_min = 0.1
+# (min_burst / max_burst are declared above, before the no_of_episodes derivation)
 min_interval = 0.2
 max_interval = 0.8
 jitter = 0.02
@@ -146,6 +178,7 @@ LEGACY_QUEUE_WAIT = _env_flag("SAFETAIL_LEGACY_QUEUE_WAIT") or LEGACY_ENV    # D
 # transmission (the quantity the min-over-subset and the reward effectively
 # optimise). "end_to_end" = service + simulated queue wait. Both are always
 # logged to latency_log.csv; this only selects the headline column.
+# Consumed by tools/make_figures.py (_default_metric); --metric overrides it.
 LATENCY_METRIC = os.environ.get("SAFETAIL_LATENCY_METRIC", "service").strip() or "service"
 
 # D-12 / D-34: transmission delay is now f(message_size, bandwidth), not a
@@ -161,6 +194,58 @@ LINK_JITTER_FRAC = float(os.environ.get("SAFETAIL_LINK_JITTER", "0.05"))
 # at 20 Mbps two-way) while now varying with type and payload:
 #   s 16-64 KB -> 12.8-51 ms | d,p 4-24 KB -> 3.2-19 ms
 MESSAGE_SIZE_KB_BY_TYPE = {"s": (16, 64), "d": (4, 24), "p": (4, 24)}
+
+# [SAFETAIL][REGRESSOR][D-40] Which measurement to use when a trace carries more
+# than one row for the same contention string.
+#   "sample" -- draw uniformly among the repeats (DEFAULT). This is how measured
+#               computation-time variance enters the simulator. On the current
+#               dataset -- 363 rows / 363 unique combinations / Iteration == [1],
+#               i.e. exactly one measurement per scenario, already averaged over
+#               ~500 files at collection time -- it is a no-op, so today's numbers
+#               are unchanged.
+#   "first"  -- always row 0 (the pre-fix behaviour; reproduces an old run
+#               against a new dataset).
+#   "mean"   -- average the numeric columns across repeats, i.e. reproduce what
+#               the current averaged dataset already is. Use this to isolate
+#               "what did the extra rows buy us?" against an otherwise identical
+#               configuration.
+# Sampling uses `random`, which src/_seeding.py seeds, so runs stay reproducible.
+# NOTE: this is the INFERENCE-side half of D-40. The other half is the retrain
+# (B1b): with repeats available, the regressors should be fitted on all of them.
+#
+# ⚠️ The current dataset is NOT quite uniform: server5.csv has 369 rows for 363
+# combinations -- 's', 'd', 'p', 'ss', 'sd' and 'sp' carry TWO genuine
+# measurements each (different times AND different telemetry, not copy-paste;
+# e.g. 'sd' = 0.033799 s vs 0.023559 s, a 30% spread). Servers 1-4 are exactly
+# 363/363. So on today's data "sample" is a no-op everywhere EXCEPT those six
+# contention strings on server 5.
+# LEGACY_ENV therefore pins "first", so SAFETAIL_LEGACY_ENV=1 still reproduces
+# results/reference_v0 exactly, consistent with the other legacy switches above.
+TRACE_SAMPLING = ("first" if LEGACY_ENV else
+                  (os.environ.get("SAFETAIL_TRACE_SAMPLING", "sample").strip().lower()
+                   or "sample"))
+
+# [SAFETAIL][REGRESSOR][D-40] Where computation time comes from.
+#   "model"     -- the fitted regressor (DEFAULT; today's behaviour).
+#   "empirical" -- sample among the MEASURED times for that contention string,
+#                  falling back to the model for unmeasured strings.
+#
+# ⚠️ WHY THIS EXISTS. The shipped regressors are POINT predictors fitted on
+# squared error, so they return E[y|x] -- the conditional MEAN. Demonstrated on
+# the only repeats the current data happens to contain (server5, 'sd'):
+#     measured  33.7991 ms  and  23.5592 ms
+#     model     20.9059 ms  for BOTH
+# A distributional dataset fed to such a model does not yield a distribution; it
+# yields a better-estimated mean. So collecting repeated measurements is
+# necessary but NOT sufficient for D-40 -- the inference path has to stop
+# averaging them too. That is what "empirical" is for.
+#
+# Recommended sequence once the new dataset lands:
+#   1. python tools/verify_dataset.py          (gate G8 -- is the data usable?)
+#   2. SAFETAIL_COMPUTATION_SOURCE=empirical   (measured variance, no retrain)
+#   3. B1b retrain, ideally quantile / residual-aware, to generalise to
+#      contention strings the trace does not cover.
+COMPUTATION_SOURCE = os.environ.get("SAFETAIL_COMPUTATION_SOURCE", "model").strip().lower() or "model"
 
 # D-23: the queue wait fed to P(T) and the episodic penalty is SIMULATED, not
 # wall-clock. The servers are an M/M/c/c loss system (D-24) -- no real queue --

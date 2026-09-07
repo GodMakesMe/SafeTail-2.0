@@ -1,6 +1,7 @@
 import argparse
 import inspect
 import logging
+import os
 import random
 import sys
 import time
@@ -221,6 +222,20 @@ def run_direct(seed: int | None, n_chunks: int, n_episodes: int,
     dt = time.time() - t0
     print(f"[SAFETAIL][MAIN][{label}] done: {controller.current_episode} episodes, "
           f"{rid} requests, {dt:.1f}s wall, dropped={controller.dropped_requests}")
+
+    # [SAFETAIL][MAIN][FIX][G5] Every run directory gets a manifest.json:
+    # git SHA + dirty flag, seed, full constants dump, package versions, host,
+    # wall clock, SHA-256 of every input CSV/pkl, and the [DEGRADED] ledger.
+    # plan.md 9.1: "a result without a manifest is not a result". Enforced by
+    # tools/check_manifest.py (gate G5).
+    try:
+        from _manifest import write_manifest
+        write_manifest(log_folder, constants, controller=controller, started_at=t0,
+                       extra={"label": label, "requests_generated": rid,
+                              "chunks_requested": n_chunks,
+                              "episodes_requested": n_episodes})
+    except Exception as e:  # noqa: BLE001
+        print(f"[SAFETAIL][MAIN][G5] manifest step failed: {type(e).__name__} - {e}")
     return controller
 
 
@@ -293,10 +308,44 @@ def main():
         print("[MAIN] Waiting for training to finish...")
 
         try:
-            controller.training_done.wait()  # BLOCKS safely
+            # [SAFETAIL][MAIN][FIX][D-42] BOUNDED wait, then finalise.
+            # This was a bare `training_done.wait()` with no timeout, and the
+            # event it waits on can NEVER be set in the shipped configuration:
+            # `training_done` fires at current_episode >= expected_episodes
+            # (= no_of_chunk / episode_size = 25,000), but the sender delivers at
+            # most no_of_burst * max_burst = 1000 * 4 = 4,000 chunks, i.e. at
+            # most 4000/chunks_per_episode(3) = 1,333 episodes. The socket entry
+            # point therefore blocks forever, with partial results already on
+            # disk. (The in-process `--run` path is unaffected: it exits on its
+            # own chunk loop, which is why every run under results/ terminated.)
+            # Raised independently by the external defect dossier (Uttam) as
+            # its D-13; confirmed here 8 Sep 2026.
+            drain_timeout = float(os.environ.get("SAFETAIL_DRAIN_TIMEOUT", "120"))
+            if not controller.training_done.wait(timeout=drain_timeout):
+                print(f"[SAFETAIL][MAIN][D-42] sender finished but training_done "
+                      f"was not set within {drain_timeout:.0f}s "
+                      f"(episodes {controller.current_episode}/"
+                      f"{controller.expected_episodes}). Finalising with what ran "
+                      f"rather than blocking forever.")
+                try:
+                    controller.generate_final_plots()
+                except Exception as e:  # noqa: BLE001
+                    print(f"[SAFETAIL][MAIN][D-42] final plots failed: "
+                          f"{type(e).__name__} - {e}")
+                controller.training_done.set()
         except KeyboardInterrupt:
             print("\n[MAIN] Ctrl+C received early.")
         finally:
+            # [SAFETAIL][MAIN][FIX][G5] the socket path gets a manifest too, so a
+            # run started this way is provenanced exactly like an in-process one.
+            try:
+                from _manifest import write_manifest
+                write_manifest(constants.training_log_folder, constants,
+                               controller=controller, started_at=None,
+                               extra={"label": "socket"})
+            except Exception as e:  # noqa: BLE001
+                print(f"[SAFETAIL][MAIN][G5] manifest step failed: "
+                      f"{type(e).__name__} - {e}")
             print("[MAIN] Stopping receiver...")
             receiver.stop()
             receiver._thread.join(timeout=5)

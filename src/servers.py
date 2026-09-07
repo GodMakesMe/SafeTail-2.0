@@ -123,7 +123,20 @@ class Server:
         key = str(combined_str).strip().lower()
         mask = self.server_data['Combination'].astype(str).str.strip().str.lower() == key
         if mask.any():
-            t = self.server_data[mask].iloc[0].get("Total Processing Time (sec)", None)
+            # [SAFETAIL][SERVER][FIX][D-40] sample among repeated measurements
+            # instead of always taking row 0 -- see regressors.TracePredictor._row.
+            # On the current one-row-per-combination trace this is a no-op.
+            rows = self.server_data[mask]
+            mode = str(getattr(constants, "TRACE_SAMPLING", "sample")).strip().lower()
+            if len(rows) > 1 and mode == "sample":
+                pick = rows.iloc[random.randrange(len(rows))]
+            elif len(rows) > 1 and mode == "mean":
+                m = rows["Total Processing Time (sec)"].mean() \
+                    if "Total Processing Time (sec)" in rows.columns else None
+                return float(m) if m is not None and not pd.isna(m) else None
+            else:
+                pick = rows.iloc[0]
+            t = pick.get("Total Processing Time (sec)", None)
             if t is not None and not pd.isna(t):
                 return float(t)
         return None
