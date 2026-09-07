@@ -157,6 +157,22 @@ def test_G5_manifest_is_written_and_complete(tmp_path):
     assert isinstance(m["degraded"], dict)
 
 
+def test_G5_dir_results_are_counted_in_the_tally():
+    """
+    `--dir` results drove the verdict and the exit code correctly but never
+    entered the good/bad lists, so the summary line counted them as neither: a
+    failing --dir run printed "0 failing" while exiting 1, and a passing one
+    printed "0 ok" while exiting 0. A tally that disagrees with the verdict
+    teaches people to ignore the tally.
+    """
+    src = (REPO / "tools" / "check_manifest.py").read_text(encoding="utf-8")
+    assert "extra_ok_n" in src and "extra_failed_n" in src, (
+        "--dir results are no longer counted (G5 tally)"
+    )
+    assert re.search(r"len\(good\)\s*\+\s*extra_ok_n", src), "ok count drops --dir successes"
+    assert re.search(r"len\(bad\)\s*\+\s*extra_failed_n", src), "failing count drops --dir failures"
+
+
 def test_G5_gate_script_exists_and_is_importable():
     gate = REPO / "tools" / "check_manifest.py"
     assert gate.exists(), "gate G5 script is missing"

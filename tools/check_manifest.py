@@ -159,10 +159,17 @@ def main() -> int:
     # [SAFETAIL][AUDIT][G5] out-of-tree runs first -- these are named explicitly,
     # so a missing manifest here IS a failure (unlike the results/* scan, where
     # pre-gate runs are merely unprovenanced).
-    # [SAFETAIL][AUDIT][G5] count as well as flag: the tally line below adds
-    # this in, otherwise a --dir failure prints "0 failing" while exiting 1.
+    #
+    # [SAFETAIL][AUDIT][G5][FIX] --dir results are COUNTED, in both directions.
+    # They drove the verdict and the exit code correctly but never entered the
+    # good/bad lists, so the summary line counted them as neither: a failing
+    # --dir run printed "0 failing" while exiting 1, and a passing one printed
+    # "0 ok" while exiting 0. A tally that disagrees with the verdict teaches
+    # people to ignore the tally. Raised twice by the Claude Code verification
+    # session, 8 Sep 2026.
     extra_failed = False
     extra_failed_n = 0
+    extra_ok_n = 0
     if args.dir:
         _cur = _current_input_hashes()
         for d in args.dir:
@@ -184,6 +191,7 @@ def main() -> int:
                 extra_failed = True; extra_failed_n += 1
             else:
                 _ok(f"{d}: manifest complete, clean tree, no degradation")
+                extra_ok_n += 1
     try:
         dirs = _run_dirs()
     except Fail as exc:
@@ -222,8 +230,8 @@ def main() -> int:
             bad.setdefault(name, []).append("required run directory not found")
 
     failed = bool(bad) or extra_failed or (args.strict and bool(unprov))
-    print(f"\n[SAFETAIL][AUDIT][G5] {len(good)} ok, {len(unprov)} unprovenanced, "
-          f"{len(bad) + extra_failed_n} failing")
+    print(f"\n[SAFETAIL][AUDIT][G5] {len(good) + extra_ok_n} ok, "
+          f"{len(unprov)} unprovenanced, {len(bad) + extra_failed_n} failing")
     print(f"[SAFETAIL][AUDIT][G5] {'FAIL' if failed else 'PASS'}")
     return 1 if failed else 0
 
