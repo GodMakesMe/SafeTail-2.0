@@ -226,3 +226,13 @@ results/_validate/
 dist/
 results/_superseded/
 results/_matrix_logs/
+
+# --- Uttam's defect dossier (source document, deliberately NOT tracked) ---
+# audit/dossier_uttam/ holds the external SafeTail Defect Dossier (3 Sep 2026)
+# and an OCR transcript. It is a COLLEAGUE'S document, and this fork is PUBLIC
+# (anonymous `git ls-remote` succeeds), so committing it would publish someone
+# else's work under Krishna's account.
+# Our ANALYSIS of it is committed and public-safe: see
+# FIXES_REPORT_SafeTail2.0_to_heterogenous.md §4b and plan.md §4.4b (D-38..D-45).
+# To include it after asking Uttam:  git add -f audit/dossier_uttam/
+audit/dossier_uttam/
